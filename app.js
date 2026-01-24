@@ -8,6 +8,7 @@ const authMiddleware = require('./src/middlewares/auth.middleware');
 const db = require('./src/models');
 const authRoutes = require('./src/routes/auth.routes');
 const clientRoutes = require('./src/routes/client.routes');
+const clientContractsRoutes = require('./src/routes/client-contracts.routes');
 const driverRoutes = require('./src/routes/driver.routes');
 const trackingRoutes = require('./src/routes/tracking.routes');
 const interviewRoutes = require('./src/routes/interview.routes');
@@ -17,6 +18,11 @@ const pendingRequestsRouter = require('./src/routes/pending-requests.routes');
 const callsRoutes = require('./src/routes/calls.routes');
 const tasksRouter = require('./src/routes/tasks.routes');
 const reportRoutes = require('./src/routes/report.routes');
+const employeeRoutes = require('./src/routes/employee.routes');
+const loansRoutes = require('./src/routes/loans.routes');
+const attendanceRoutes = require('./src/routes/attendance.routes');
+
+
 
 
 
@@ -51,6 +57,8 @@ app.use('/api/auth', authRoutes);
 
 // ===== Protected Routes =====
 app.use('/api/clients', authMiddleware, clientRoutes);
+app.use('/api/client-contracts', authMiddleware, clientContractsRoutes);
+
 app.use('/api/drivers', authMiddleware, driverRoutes);
 app.use('/api/tracking', authMiddleware, trackingRoutes);
 app.use('/api/interviews', authMiddleware, interviewRoutes);
@@ -60,6 +68,11 @@ app.use('/api/pending-requests', pendingRequestsRouter);
 app.use('/api/calls', callsRoutes);
 app.use('/api/tasks', tasksRouter);
 app.use('/api/reports', reportRoutes);
+app.use('/api/employees', employeeRoutes);
+app.use('/api/operations/loans', loansRoutes);
+app.use('/api/attendance', attendanceRoutes);
+
+
 
 
 

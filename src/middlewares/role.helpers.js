@@ -50,9 +50,51 @@ function requireOperationStaff(req, res, next) {
   return res.status(403).json({ message: 'Operation staff only' });
 }
 
+// ============ NEW: Generic / HR / Finance (إضافات بدون كسر القديم) ============
+
+function requireRoles(...roles) {
+  return (req, res, next) => {
+    const user = req.user;
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+    if (roles.includes(user.role)) return next();
+    return res.status(403).json({ message: 'Forbidden' });
+  };
+}
+
+function requireAdmin(req, res, next) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ message: 'Unauthorized' });
+  if (user.role === 'admin') return next();
+  return res.status(403).json({ message: 'Admin access only' });
+}
+
+function requireHRorAdmin(req, res, next) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+  if (user.role === 'admin' || user.role === 'hr') return next();
+  return res.status(403).json({ message: 'HR/Admin access only' });
+}
+
+function requireFinanceorAdmin(req, res, next) {
+  const user = req.user;
+  if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+  if (user.role === 'admin' || user.role === 'finance') return next();
+  return res.status(403).json({ message: 'Finance/Admin access only' });
+}
+
 module.exports = {
+  // old exports (unchanged)
   isOperationManagerOrSupervisor,
   isOperationSeniorOrJunior,
   requireOperationManagerOrSupervisor,
   requireOperationStaff,
+
+  // new exports
+  requireRoles,
+  requireAdmin,
+  requireHRorAdmin,
+  requireFinanceorAdmin,
 };
