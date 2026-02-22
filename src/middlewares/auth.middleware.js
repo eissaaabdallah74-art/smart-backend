@@ -1,28 +1,67 @@
 // src/middlewares/auth.middleware.js
-const jwt = require('jsonwebtoken');
+const jwt = require("jsonwebtoken");
+const db = require("../models");
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-key';
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-key";
 
-function authMiddleware(req, res, next) {
-  const authHeader = req.headers.authorization || '';
-
-  // نتوقع "Bearer <token>"
-  const parts = authHeader.split(' ');
-  const token = parts.length === 2 && parts[0] === 'Bearer' ? parts[1] : null;
-
-  if (!token) {
-    return res.status(401).json({ message: 'No token provided' });
-  }
-
+module.exports = async function authMiddleware(req, res, next) {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    // decoded: { id, email, role, position, iat, exp }
-    req.user = decoded;
-    next();
-  } catch (err) {
-    console.error('authMiddleware error:', err);
-    return res.status(401).json({ message: 'Invalid or expired token' });
-  }
-}
+    const header = String(req.headers.authorization || "");
+    const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
 
-module.exports = authMiddleware;
+    if (!token) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    // Load auth user from DB (source of truth)
+    const authUser = await db.Auth.findByPk(decoded.id);
+    if (!authUser) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    if (!authUser.isActive) {
+      return res
+        .status(403)
+        .json({ message: "This account is inactive. Please contact admin." });
+    }
+
+    // Resolve linked employee
+    let employee = null;
+
+    // admin غالباً مش محتاج employeeId (وانت مانع admin من إنشاء requests)
+    if (String(authUser.role).toLowerCase() !== "admin") {
+      employee = await db.Employee.findOne({
+        where: { authUserId: authUser.id },
+        attributes: ["id", "fullName", "authUserId"],
+      });
+    }
+
+    // attach normalized user shape
+    req.user = {
+      id: authUser.id,
+      email: authUser.email,
+      fullName: authUser.fullName,
+      role: authUser.role,
+      position: authUser.position || null,
+      isActive: !!authUser.isActive,
+
+      // ✅ the important part
+      employeeId: employee ? employee.id : null,
+    };
+
+    // optional: attach employee object for other controllers
+    req.employee = employee;
+
+    return next();
+  } catch (e) {
+    console.error("auth.middleware error:", e);
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+};

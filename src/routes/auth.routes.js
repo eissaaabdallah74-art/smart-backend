@@ -1,50 +1,50 @@
 // src/routes/auth.routes.js
-const express = require('express');
+const express = require("express");
 const router = express.Router();
 
-const authController = require('../controllers/auth.controller');
-const authMiddleware = require('../middlewares/auth.middleware');
+const authController = require("../controllers/auth.controller");
+const authMiddleware = require("../middlewares/auth.middleware");
 const {
   requireOperationManagerOrSupervisor,
-} = require('../middlewares/role.helpers');
+} = require("../middlewares/role.helpers");
 
 // Middleware بسيط للـ admin فقط
 function requireAdmin(req, res, next) {
-  if (req.user && req.user.role === 'admin') {
+  if (req.user && req.user.role === "admin") {
     return next();
   }
-  return res.status(403).json({ message: 'Admin access only' });
+  return res.status(403).json({ message: "Admin access only" });
 }
 
 // ===== Auth: Login =====
 // POST /api/auth/login
-router.post('/login', authController.login);
+router.post("/login", authController.login);
 
 // ===== Admin: CRUD Accounts =====
 // كل اللي تحت هنا محتاج token + admin
 
-// GET /api/auth/users  + فلاتر اختيارية ?role=&active=&q=
-router.get('/users', authMiddleware, requireAdmin, authController.getAllUsers);
+// GET /api/auth/users  + فلاتر اختيارية ?role=&active=&q=&includeEmployee=true
+router.get("/users", authMiddleware, requireAdmin, authController.getAllUsers);
 
-// GET /api/auth/users/:id
+// GET /api/auth/users/:id   + optional ?includeEmployee=true
 router.get(
-  '/users/:id',
+  "/users/:id",
   authMiddleware,
   requireAdmin,
   authController.getUserById
 );
 
-// POST /api/auth/users
+// POST /api/auth/users   (+ optional employeeId)
 router.post(
-  '/users',
+  "/users",
   authMiddleware,
   requireAdmin,
   authController.createUser
 );
 
-// PUT /api/auth/users/:id
+// PUT /api/auth/users/:id   (+ optional employeeId)
 router.put(
-  '/users/:id',
+  "/users/:id",
   authMiddleware,
   requireAdmin,
   authController.updateUser
@@ -52,16 +52,25 @@ router.put(
 
 // DELETE /api/auth/users/:id
 router.delete(
-  '/users/:id',
+  "/users/:id",
   authMiddleware,
   requireAdmin,
   authController.deleteUser
 );
 
+// ===== Admin: Employees dropdown for Users =====
+// GET /api/auth/employees/available?q=&isWorking=&department=&includeLinked=
+router.get(
+  "/employees/available",
+  authMiddleware,
+  requireAdmin,
+  authController.getAvailableEmployees
+);
+
 // ===== Operation Manager/Supervisor + Admin: Operation Staff =====
 // GET /api/auth/operation/staff?active=true
 router.get(
-  '/operation/staff',
+  "/operation/staff",
   authMiddleware,
   requireOperationManagerOrSupervisor,
   authController.getOperationStaff

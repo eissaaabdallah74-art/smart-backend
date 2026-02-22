@@ -6,18 +6,14 @@ const {
   AttendanceMonthlySummary,
   Employee,
   EmployeeAttendanceProfile,
-  AttendanceExcuse,
-  sequelize,
   AttendanceUnmatchedRow,
   AttendanceManualItem,
-} = require('../models');
+  AttendanceRequest,
+  sequelize,
+} = require("../models");
 
-const {
-  importAttendanceFromBuffer,
-} = require("../services/attendance/importAttendance.service");
-const {
-  computeMonthForImport,
-} = require("../services/attendance/computeAttendance.service");
+const { importAttendanceFromBuffer } = require("../services/attendance/importAttendance.service");
+const { computeMonthForImport } = require("../services/attendance/computeAttendance.service");
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -30,6 +26,35 @@ function isValidMonth(month) {
   return !!month && /^\d{4}-\d{2}$/.test(month);
 }
 
+function isValidDate(date) {
+  return !!date && /^\d{4}-\d{2}-\d{2}$/.test(date);
+}
+
+function getMonthBounds(month) {
+  const [y, m] = String(month).split("-").map((x) => Number(x));
+  const lastDay = new Date(y, m, 0).getDate();
+  return {
+    start: `${month}-01`,
+    end: `${month}-${String(lastDay).padStart(2, "0")}`,
+  };
+}
+
+function canViewSalary(role) {
+  return role === "admin" || role === "finance";
+}
+
+function canManageRequests(role) {
+  return role === "admin" || role === "hr";
+}
+
+function getActor(req) {
+  return {
+    userId: req.user?.id || null,
+    role: req.user?.role || "user",
+    employeeId: req.user?.employeeId || null, // مهم يكون عندك mapping user -> employee
+  };
+}
+
 async function getLatestDoneImport(month) {
   return AttendanceImport.findOne({
     where: { month, status: "done" },
@@ -37,13 +62,13 @@ async function getLatestDoneImport(month) {
   });
 }
 
+// ================= Imports =================
+
 // POST /api/attendance/import
 exports.importSheet = async (req, res) => {
   try {
     if (!req.file?.buffer)
-      return res
-        .status(400)
-        .json({ message: "file is required (form-data: file)" });
+      return res.status(400).json({ message: "file is required (form-data: file)" });
 
     const result = await importAttendanceFromBuffer({
       buffer: req.file.buffer,
@@ -52,9 +77,7 @@ exports.importSheet = async (req, res) => {
     });
 
     if (!result.ok)
-      return res
-        .status(400)
-        .json({ message: result.message || "Import failed" });
+      return res.status(400).json({ message: result.message || "Import failed" });
 
     // compute right away
     await computeMonthForImport(result.importId);
@@ -104,13 +127,8 @@ exports.getMonthlySummary = async (req, res) => {
       return res.json({ month, importId: null, workingDaysCount: 0, data: [] });
 
     const wantSalary = includeSalary === "true";
-    if (wantSalary) {
-      const role = req.user?.role;
-      if (!(role === "admin" || role === "finance")) {
-        return res
-          .status(403)
-          .json({ message: "Finance/Admin only to view salary deductions" });
-      }
+    if (wantSalary && !canViewSalary(req.user?.role)) {
+      return res.status(403).json({ message: "Finance/Admin only to view salary deductions" });
     }
 
     const attrs = wantSalary
@@ -142,7 +160,7 @@ exports.getMonthlySummary = async (req, res) => {
   }
 };
 
-// ✅ NEW: GET /api/attendance/unmatched?month=YYYY-MM
+// GET /api/attendance/unmatched?month=YYYY-MM
 exports.getUnmatchedRows = async (req, res) => {
   try {
     const { month } = req.query;
@@ -160,7 +178,6 @@ exports.getUnmatchedRows = async (req, res) => {
       });
     }
 
-    // 1) لو عندك جدول unmatched rows فعلاً (أفضل)
     if (AttendanceUnmatchedRow) {
       const rows = await AttendanceUnmatchedRow.findAll({
         where: { importId: imp.id, isResolved: false },
@@ -188,7 +205,6 @@ exports.getUnmatchedRows = async (req, res) => {
       });
     }
 
-    // 2) Fallback: unmatchedSampleJson لو موجودة
     let sample =
       imp.unmatchedSampleJson ||
       imp.unmatched_sample_json ||
@@ -212,7 +228,7 @@ exports.getUnmatchedRows = async (req, res) => {
       workingDaysCount: imp.workingDaysCount || 0,
       total: data.length,
       data,
-      note: "unmatched rows are returned from unmatchedSample fallback. If you want full unmatched list, we should persist unmatched rows in DB during import.",
+      note: "unmatched rows are returned from unmatchedSample fallback. Persist unmatched rows for full list.",
     });
   } catch (e) {
     console.error("getUnmatchedRows error:", e);
@@ -220,24 +236,19 @@ exports.getUnmatchedRows = async (req, res) => {
   }
 };
 
-// ✅ NEW: POST /api/attendance/mapping  body: { employeeId, empNo, acNo, notes? }
+// POST /api/attendance/mapping  body: { employeeId, empNo, acNo, notes? }
 exports.upsertMappingFromBody = async (req, res) => {
   try {
     const { employeeId } = req.body || {};
     if (!employeeId)
       return res.status(400).json({ message: "employeeId is required" });
 
-    // reuse existing handler by adapting req.params + body shape
     req.params.employeeId = String(employeeId);
 
-    // allow both naming styles
-    const { attendanceEmpNo, attendanceAcNo, empNo, acNo, notes } =
-      req.body || {};
+    const { attendanceEmpNo, attendanceAcNo, empNo, acNo, notes } = req.body || {};
     req.body = {
-      attendanceEmpNo:
-        typeof attendanceEmpNo !== "undefined" ? attendanceEmpNo : empNo,
-      attendanceAcNo:
-        typeof attendanceAcNo !== "undefined" ? attendanceAcNo : acNo,
+      attendanceEmpNo: typeof attendanceEmpNo !== "undefined" ? attendanceEmpNo : empNo,
+      attendanceAcNo: typeof attendanceAcNo !== "undefined" ? attendanceAcNo : acNo,
       notes,
     };
 
@@ -248,7 +259,7 @@ exports.upsertMappingFromBody = async (req, res) => {
   }
 };
 
-// PUT /api/attendance/mapping/:employeeId  body: { attendanceEmpNo, attendanceAcNo, notes }
+// PUT /api/attendance/mapping/:employeeId
 exports.upsertMapping = async (req, res) => {
   const t = await sequelize.transaction();
   try {
@@ -264,19 +275,13 @@ exports.upsertMapping = async (req, res) => {
       return res.status(404).json({ message: "Employee not found" });
     }
 
-    // accept both styles from frontend
     const body = req.body || {};
     const attendanceEmpNo =
-      typeof body.attendanceEmpNo !== "undefined"
-        ? body.attendanceEmpNo
-        : body.empNo;
+      typeof body.attendanceEmpNo !== "undefined" ? body.attendanceEmpNo : body.empNo;
     const attendanceAcNo =
-      typeof body.attendanceAcNo !== "undefined"
-        ? body.attendanceAcNo
-        : body.acNo;
+      typeof body.attendanceAcNo !== "undefined" ? body.attendanceAcNo : body.acNo;
     const notes = body.notes;
 
-    // uniqueness check (avoid conflicts)
     if (attendanceEmpNo) {
       const ex = await EmployeeAttendanceProfile.findOne({
         where: {
@@ -287,11 +292,7 @@ exports.upsertMapping = async (req, res) => {
       });
       if (ex) {
         await t.rollback();
-        return res
-          .status(400)
-          .json({
-            message: "attendanceEmpNo already linked to another employee",
-          });
+        return res.status(400).json({ message: "attendanceEmpNo already linked to another employee" });
       }
     }
 
@@ -305,32 +306,18 @@ exports.upsertMapping = async (req, res) => {
       });
       if (ex) {
         await t.rollback();
-        return res
-          .status(400)
-          .json({
-            message: "attendanceAcNo already linked to another employee",
-          });
+        return res.status(400).json({ message: "attendanceAcNo already linked to another employee" });
       }
     }
 
-    let profile = await EmployeeAttendanceProfile.findByPk(employeeId, {
-      transaction: t,
-    });
-    if (!profile)
-      profile = await EmployeeAttendanceProfile.create(
-        { employeeId },
-        { transaction: t }
-      );
+    let profile = await EmployeeAttendanceProfile.findByPk(employeeId, { transaction: t });
+    if (!profile) profile = await EmployeeAttendanceProfile.create({ employeeId }, { transaction: t });
 
     if (typeof attendanceEmpNo !== "undefined")
-      profile.attendanceEmpNo = attendanceEmpNo
-        ? String(attendanceEmpNo).trim()
-        : null;
+      profile.attendanceEmpNo = attendanceEmpNo ? String(attendanceEmpNo).trim() : null;
 
     if (typeof attendanceAcNo !== "undefined")
-      profile.attendanceAcNo = attendanceAcNo
-        ? String(attendanceAcNo).trim()
-        : null;
+      profile.attendanceAcNo = attendanceAcNo ? String(attendanceAcNo).trim() : null;
 
     if (typeof notes !== "undefined") profile.notes = notes || null;
 
@@ -345,18 +332,21 @@ exports.upsertMapping = async (req, res) => {
   }
 };
 
-// ✅ NEW: POST /api/attendance/recompute?month=YYYY-MM
+// POST /api/attendance/recompute?month=YYYY-MM
 exports.recomputeMonth = async (req, res) => {
   try {
     const { month } = req.query;
     if (!isValidMonth(month))
       return res.status(400).json({ message: "month is required: YYYY-MM" });
 
+    // يفضل تحصرها HR/Admin
+    if (!canManageRequests(req.user?.role)) {
+      return res.status(403).json({ message: "HR/Admin only" });
+    }
+
     const imp = await getLatestDoneImport(month);
     if (!imp)
-      return res
-        .status(404)
-        .json({ message: "No done import found for this month" });
+      return res.status(404).json({ message: "No done import found for this month" });
 
     await computeMonthForImport(imp.id);
 
@@ -367,187 +357,328 @@ exports.recomputeMonth = async (req, res) => {
   }
 };
 
-// ================= Excuses =================
+// ================= Requests (NEW FLOW) =================
 
-// POST /api/attendance/excuses  body: { employeeId, date(YYYY-MM-DD), minutes, note }
-exports.createExcuse = async (req, res) => {
+// POST /api/attendance/requests
+// body:
+//  - excuse_minutes: { employeeId?, date, minutes, note? }
+//  - leave_day:      { employeeId?, date, leaveType, note? }
+exports.createRequest = async (req, res) => {
   const t = await sequelize.transaction();
   try {
-    const { employeeId, date, minutes, note } = req.body || {};
-    const eid = Number(employeeId);
-    const min = Number(minutes);
+    const actor = getActor(req);
+    const body = req.body || {};
 
-    if (!eid || Number.isNaN(eid)) {
-      await t.rollback();
-      return res.status(400).json({ message: "employeeId is required" });
-    }
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const date = body.date;
+    if (!isValidDate(date)) {
       await t.rollback();
       return res.status(400).json({ message: "date is required: YYYY-MM-DD" });
     }
-    if (!Number.isFinite(min) || min <= 0 || min > 120) {
+
+    const month = String(date).slice(0, 7);
+    if (!isValidMonth(month)) {
       await t.rollback();
-      return res.status(400).json({ message: "minutes must be 1..120" });
+      return res.status(400).json({ message: "Invalid month derived from date" });
     }
 
-    const month = date.slice(0, 7);
+    // تحديد employeeId
+    let employeeId = null;
 
-    // enforce: max 2 excuses per month, total 240 minutes
-    const existing = await AttendanceExcuse.findAll({
+    // لو user مربوط بـ employeeId ومش HR/Admin => يبقى Self فقط
+    if (actor.employeeId && !canManageRequests(actor.role)) {
+      employeeId = Number(actor.employeeId);
+    } else {
+      employeeId = Number(body.employeeId);
+    }
+
+    if (!employeeId || Number.isNaN(employeeId)) {
+      await t.rollback();
+      return res.status(400).json({ message: "employeeId is required" });
+    }
+
+    const employee = await Employee.findByPk(employeeId, { transaction: t });
+    if (!employee) {
+      await t.rollback();
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    const type = String(body.type || "").trim();
+    if (!type || !["excuse_minutes", "leave_day"].includes(type)) {
+      await t.rollback();
+      return res.status(400).json({ message: "type must be excuse_minutes | leave_day" });
+    }
+
+    // تمنع تعارض نفس اليوم (pending/approved)
+    const dayConflicts = await AttendanceRequest.findAll({
       where: {
-        employeeId: eid,
-        date: { [Op.gte]: `${month}-01`, [Op.lte]: `${month}-31` },
+        employeeId,
+        date,
+        status: { [Op.in]: ["pending", "approved"] },
       },
       transaction: t,
       lock: t.LOCK.UPDATE,
     });
 
-    const count = existing.length;
-    const total = existing.reduce((a, r) => a + Number(r.minutes || 0), 0);
-
-    if (count >= 2) {
-      await t.rollback();
-      return res
-        .status(400)
-        .json({ message: "Monthly excuses limit reached (max 2)" });
+    if (dayConflicts.length > 0) {
+      // لو فيه leave_day pending/approved على نفس اليوم => ممنوع أي حاجة تانية
+      const hasLeave = dayConflicts.some((r) => r.type === "leave_day");
+      if (hasLeave) {
+        await t.rollback();
+        return res.status(400).json({ message: "A leave request already exists for this date" });
+      }
+      // لو انت بتطلب leave_day وفيه excuse_minutes على نفس اليوم => امنع
+      if (type === "leave_day") {
+        await t.rollback();
+        return res.status(400).json({ message: "An excuse request already exists for this date" });
+      }
+      // لو نفس النوع موجود => امنع duplicate
+      const sameType = dayConflicts.some((r) => r.type === type);
+      if (sameType) {
+        await t.rollback();
+        return res.status(400).json({ message: "Request already exists for this date" });
+      }
     }
-    if (total + min > 240) {
-      await t.rollback();
-      return res
-        .status(400)
-        .json({ message: "Monthly excuses minutes limit exceeded (max 240)" });
+
+    // rules for excuse_minutes
+    let minutes = null;
+    let leaveType = null;
+
+    if (type === "excuse_minutes") {
+      minutes = Number(body.minutes);
+      if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 120) {
+        await t.rollback();
+        return res.status(400).json({ message: "minutes must be 1..120" });
+      }
+
+      const { start, end } = getMonthBounds(month);
+
+      const existing = await AttendanceRequest.findAll({
+        where: {
+          employeeId,
+          month,
+          type: "excuse_minutes",
+          status: { [Op.in]: ["pending", "approved"] },
+          date: { [Op.between]: [start, end] },
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      const count = existing.length;
+      const total = existing.reduce((a, r) => a + Number(r.minutes || 0), 0);
+
+      if (count >= 2) {
+        await t.rollback();
+        return res.status(400).json({ message: "Monthly excuses limit reached (max 2 requests)" });
+      }
+      if (total + minutes > 240) {
+        await t.rollback();
+        return res.status(400).json({ message: "Monthly excuses minutes limit exceeded (max 240)" });
+      }
     }
 
-    const row = await AttendanceExcuse.create(
+    // rules for leave_day
+    if (type === "leave_day") {
+      leaveType = String(body.leaveType || "annual").trim() || "annual";
+      // optional: restrict values
+      const allowed = new Set(["annual", "sick", "unpaid", "official"]);
+      if (!allowed.has(leaveType)) {
+        await t.rollback();
+        return res.status(400).json({ message: "leaveType must be one of: annual, sick, unpaid, official" });
+      }
+    }
+
+    const row = await AttendanceRequest.create(
       {
-        employeeId: eid,
+        employeeId,
+        month,
         date,
-        minutes: min,
-        note: note || null,
-        createdBy: req.user?.id || null,
+        type,
+        minutes,
+        leaveType,
+        status: "pending",
+        note: body.note || null,
+        createdBy: actor.userId,
       },
       { transaction: t }
     );
 
-    const imp = await getLatestDoneImport(month);
     await t.commit();
-
-    if (imp) await computeMonthForImport(imp.id);
-
     return res.status(201).json(row);
   } catch (e) {
     await t.rollback();
-    console.error("createExcuse error:", e);
+    console.error("createRequest error:", e);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// PUT /api/attendance/excuses/:id
-exports.updateExcuse = async (req, res) => {
-  const t = await sequelize.transaction();
+// GET /api/attendance/requests?month=YYYY-MM&status=pending|approved|rejected&employeeId=
+// - Employee: يرجع طلباته فقط
+// - HR/Admin: يقدر يشوف الكل
+exports.listRequests = async (req, res) => {
   try {
-    const id = Number(req.params.id);
-    if (Number.isNaN(id)) {
-      await t.rollback();
-      return res.status(400).json({ message: "Invalid id" });
-    }
+    const actor = getActor(req);
+    const { month, status, employeeId } = req.query;
 
-    const row = await AttendanceExcuse.findByPk(id, {
-      transaction: t,
-      lock: t.LOCK.UPDATE,
-    });
-    if (!row) {
-      await t.rollback();
-      return res.status(404).json({ message: "Excuse not found" });
-    }
-
-    const { minutes, note, date } = req.body || {};
-
-    if (typeof date !== "undefined") {
-      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        await t.rollback();
-        return res.status(400).json({ message: "date must be YYYY-MM-DD" });
-      }
-      row.date = date;
-    }
-
-    if (typeof minutes !== "undefined") {
-      const min = Number(minutes);
-      if (!Number.isFinite(min) || min <= 0 || min > 120) {
-        await t.rollback();
-        return res.status(400).json({ message: "minutes must be 1..120" });
-      }
-      row.minutes = min;
-    }
-
-    if (typeof note !== "undefined") row.note = note || null;
-
-    const month = String(row.date).slice(0, 7);
-    const siblings = await AttendanceExcuse.findAll({
-      where: {
-        employeeId: row.employeeId,
-        date: { [Op.gte]: `${month}-01`, [Op.lte]: `${month}-31` },
-        id: { [Op.ne]: row.id },
-      },
-      transaction: t,
-      lock: t.LOCK.UPDATE,
-    });
-
-    const count = siblings.length + 1;
-    const total =
-      siblings.reduce((a, r) => a + Number(r.minutes || 0), 0) +
-      Number(row.minutes || 0);
-
-    if (count > 2) {
-      await t.rollback();
-      return res
-        .status(400)
-        .json({ message: "Monthly excuses limit reached (max 2)" });
-    }
-    if (total > 240) {
-      await t.rollback();
-      return res
-        .status(400)
-        .json({ message: "Monthly excuses minutes limit exceeded (max 240)" });
-    }
-
-    await row.save({ transaction: t });
-
-    const imp = await getLatestDoneImport(month);
-    await t.commit();
-
-    if (imp) await computeMonthForImport(imp.id);
-
-    return res.json(row);
-  } catch (e) {
-    await t.rollback();
-    console.error("updateExcuse error:", e);
-    return res.status(500).json({ message: "Internal server error" });
-  }
-};
-
-// GET /api/attendance/excuses?month=YYYY-MM&employeeId=
-exports.listExcuses = async (req, res) => {
-  try {
-    const { month, employeeId } = req.query;
     const where = {};
 
-    if (employeeId) where.employeeId = Number(employeeId);
-    if (month)
-      where.date = { [Op.gte]: `${month}-01`, [Op.lte]: `${month}-31` };
+    if (month) {
+      if (!isValidMonth(month)) return res.status(400).json({ message: "Invalid month" });
+      where.month = month;
+    }
 
-    const rows = await AttendanceExcuse.findAll({
+    if (status) {
+      where.status = String(status);
+    }
+
+    if (canManageRequests(actor.role)) {
+      if (employeeId) where.employeeId = Number(employeeId);
+    } else {
+      if (!actor.employeeId) {
+        return res.status(403).json({ message: "No employeeId bound to this user" });
+      }
+      where.employeeId = Number(actor.employeeId);
+    }
+
+    const rows = await AttendanceRequest.findAll({
       where,
-      order: [["date", "ASC"]],
+      include: canManageRequests(actor.role)
+        ? [{ model: Employee, as: "employee", attributes: ["id", "fullName", "nationalId"] }]
+        : [],
+      order: [["date", "DESC"], ["id", "DESC"]],
+      limit: 2000,
     });
 
     return res.json(rows);
   } catch (e) {
-    console.error("listExcuses error:", e);
+    console.error("listRequests error:", e);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
 
+// PATCH /api/attendance/requests/:id/decision
+// body: { status: 'approved'|'rejected', decisionNote? }
+// HR/Admin only
+exports.decideRequest = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const actor = getActor(req);
+    if (!canManageRequests(actor.role)) {
+      await t.rollback();
+      return res.status(403).json({ message: "HR/Admin only" });
+    }
+
+    const id = Number(req.params.id);
+    if (!id || Number.isNaN(id)) {
+      await t.rollback();
+      return res.status(400).json({ message: "Invalid id" });
+    }
+
+    const body = req.body || {};
+    const nextStatus = String(body.status || "").toLowerCase();
+    if (!["approved", "rejected"].includes(nextStatus)) {
+      await t.rollback();
+      return res.status(400).json({ message: "status must be approved | rejected" });
+    }
+
+    const row = await AttendanceRequest.findByPk(id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!row) {
+      await t.rollback();
+      return res.status(404).json({ message: "Request not found" });
+    }
+
+    if (row.status !== "pending") {
+      await t.rollback();
+      return res.status(409).json({ message: "Only pending requests can be decided" });
+    }
+
+    row.status = nextStatus;
+    row.decidedBy = actor.userId;
+    row.decidedAt = new Date();
+    row.decisionNote = body.decisionNote || null;
+
+    await row.save({ transaction: t });
+    await t.commit();
+
+    // ✅ recompute if approved and import exists
+    let recomputed = false;
+    let importId = null;
+
+    if (nextStatus === "approved") {
+      const imp = await getLatestDoneImport(row.month);
+      if (imp) {
+        await computeMonthForImport(imp.id);
+        recomputed = true;
+        importId = imp.id;
+      }
+    }
+
+    return res.json({
+      ok: true,
+      id: row.id,
+      month: row.month,
+      status: row.status,
+      recomputed,
+      importId,
+    });
+  } catch (e) {
+    await t.rollback();
+    console.error("decideRequest error:", e);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// DELETE /api/attendance/requests/:id
+// Employee cancels his pending request
+exports.cancelRequest = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const actor = getActor(req);
+    const id = Number(req.params.id);
+    if (!id || Number.isNaN(id)) {
+      await t.rollback();
+      return res.status(400).json({ message: "Invalid id" });
+    }
+
+    const row = await AttendanceRequest.findByPk(id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (!row) {
+      await t.rollback();
+      return res.status(404).json({ message: "Request not found" });
+    }
+
+    // employee: لازم يبقى نفس employeeId + pending
+    if (!canManageRequests(actor.role)) {
+      if (!actor.employeeId || Number(actor.employeeId) !== Number(row.employeeId)) {
+        await t.rollback();
+        return res.status(403).json({ message: "Not allowed" });
+      }
+      if (row.status !== "pending") {
+        await t.rollback();
+        return res.status(409).json({ message: "Only pending requests can be cancelled" });
+      }
+    }
+
+    row.status = "cancelled";
+    await row.save({ transaction: t });
+    await t.commit();
+
+    return res.json({ ok: true, cancelled: true, id: row.id });
+  } catch (e) {
+    await t.rollback();
+    console.error("cancelRequest error:", e);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// ================= Employee month details =================
 
 // GET /api/attendance/employee/:employeeId?month=YYYY-MM&includeSalary=true|false
 exports.getEmployeeMonthDetails = async (req, res) => {
@@ -575,21 +706,17 @@ exports.getEmployeeMonthDetails = async (req, res) => {
         employee,
         month,
         workingDaysCount: 0,
-        payroll: { grossSalary: 0, dailyRate: 0 },
-        totals: { totalDeductionAmount: 0, netSalary: 0 },
+        payroll: null,
+        totals: null,
         items: [],
+        requests: [],
         includeSalary: false,
       });
     }
 
     const wantSalary = includeSalary === "true";
-    if (wantSalary) {
-      const role = req.user?.role;
-      if (!(role === "admin" || role === "finance")) {
-        return res
-          .status(403)
-          .json({ message: "Finance/Admin only to view salary deductions" });
-      }
+    if (wantSalary && !canViewSalary(req.user?.role)) {
+      return res.status(403).json({ message: "Finance/Admin only to view salary deductions" });
     }
 
     const summaryAttrs = wantSalary
@@ -606,35 +733,36 @@ exports.getEmployeeMonthDetails = async (req, res) => {
       order: [["date", "ASC"]],
     });
 
-    // ===== Salary base (from summary - after compute includes manual) =====
-    const grossSalary = Number(
-      summary?.salaryGrossUsed ?? summary?.salary_gross_used ?? 0
-    );
-    const dailyRate = Number(summary?.dayRate ?? summary?.day_rate ?? 0);
-    const totalDeductionAmount = Number(
-      summary?.deductionAmount ?? summary?.deduction_amount ?? 0
-    );
+    // ✅ requests (pending/approved/rejected/cancelled)
+    const requests = await AttendanceRequest.findAll({
+      where: { employeeId, month },
+      order: [["date", "ASC"], ["id", "ASC"]],
+    });
+
+    // ===== Salary base (only if wantSalary) =====
+    const grossSalary = wantSalary
+      ? Number(summary?.salaryGrossUsed ?? summary?.salary_gross_used ?? 0)
+      : null;
+    const dailyRate = wantSalary ? Number(summary?.dayRate ?? summary?.day_rate ?? 0) : null;
+    const totalDeductionAmount = wantSalary
+      ? Number(summary?.deductionAmount ?? summary?.deduction_amount ?? 0)
+      : null;
 
     const netSalary =
-      grossSalary > 0 ? Math.max(grossSalary - totalDeductionAmount, 0) : 0;
+      wantSalary && grossSalary > 0
+        ? Math.max(grossSalary - (totalDeductionAmount || 0), 0)
+        : null;
 
-    // ===== Auto items (AttendanceDay) =====
+    // ===== Auto items (only penalty items) =====
     const autoItems = (days || [])
       .map((d) => {
         const dateISO = String(d.date).slice(0, 10);
         const absent = !!(d.absent ?? d.get?.("absent"));
 
-        const latePenaltyDays = Number(
-          d.latePenaltyDays ?? d.late_penalty_days ?? 0
-        );
-        const absentPenaltyDays = Number(
-          d.absentPenaltyDays ?? d.absent_penalty_days ?? 0
-        );
+        const latePenaltyDays = Number(d.latePenaltyDays ?? d.late_penalty_days ?? 0);
+        const absentPenaltyDays = Number(d.absentPenaltyDays ?? d.absent_penalty_days ?? 0);
 
-        const deductionDays = absent
-          ? absentPenaltyDays || 1
-          : latePenaltyDays || 0;
-
+        const deductionDays = absent ? absentPenaltyDays || 1 : latePenaltyDays || 0;
         if (!deductionDays || deductionDays <= 0) return null;
 
         const lateMinutes = Number(
@@ -645,7 +773,8 @@ exports.getEmployeeMonthDetails = async (req, res) => {
             0
         );
 
-        const amount = dailyRate > 0 ? dailyRate * deductionDays : 0;
+        const amount =
+          wantSalary && dailyRate ? Number(dailyRate) * Number(deductionDays) : null;
 
         return {
           id: d.id, // positive
@@ -668,29 +797,32 @@ exports.getEmployeeMonthDetails = async (req, res) => {
     });
 
     const manualItems = (manualRows || []).map((m) => {
-      const baseAmount =
-        m.amount !== null && typeof m.amount !== "undefined"
-          ? Number(m.amount)
-          : dailyRate > 0 && m.days
-          ? Number(dailyRate) * Number(m.days)
-          : 0;
-
       const dir = String(m.direction || "deduct").toLowerCase();
       const sign = dir === "add" ? -1 : 1;
 
-      const amount = sign * Number(baseAmount || 0);
-      const dDays =
-        m.days !== null && typeof m.days !== "undefined"
-          ? sign * Number(m.days)
-          : 0;
+      const deductionDays =
+        m.days !== null && typeof m.days !== "undefined" ? sign * Number(m.days) : 0;
+
+      const amount =
+        wantSalary
+          ? (() => {
+              const baseAmount =
+                m.amount !== null && typeof m.amount !== "undefined"
+                  ? Number(m.amount)
+                  : dailyRate && m.days
+                  ? Number(dailyRate) * Number(m.days)
+                  : 0;
+              return sign * Number(baseAmount || 0);
+            })()
+          : null;
 
       return {
-        id: -Number(m.id), // ✅ manual IDs are NEGATIVE
+        id: -Number(m.id), // manual IDs negative
         date: String(m.date).slice(0, 10),
         type: "manual",
         lateMinutes: null,
-        deductionDays: Number.isFinite(dDays) ? dDays : 0,
-        amount: Number.isFinite(amount) ? amount : 0,
+        deductionDays: Number.isFinite(deductionDays) ? deductionDays : 0,
+        amount,
         isException: !!(m.isException ?? m.is_exception ?? false),
         note: m.note || null,
         source: "manual",
@@ -705,9 +837,10 @@ exports.getEmployeeMonthDetails = async (req, res) => {
       employee,
       month,
       workingDaysCount: imp.workingDaysCount || 0,
-      payroll: { grossSalary, dailyRate },
-      totals: { totalDeductionAmount, netSalary },
+      payroll: wantSalary ? { grossSalary, dailyRate } : null,
+      totals: wantSalary ? { totalDeductionAmount, netSalary } : null,
       items: allItems,
+      requests,
       includeSalary: wantSalary,
     });
   } catch (e) {
@@ -716,10 +849,7 @@ exports.getEmployeeMonthDetails = async (req, res) => {
   }
 };
 
-
 // PATCH /api/attendance/employee/:employeeId/items/:itemId
-// body: { isException?: boolean }  (if omitted -> toggle)
-// NOTE: itemId > 0 => AttendanceDay, itemId < 0 => AttendanceManualItem
 exports.toggleEmployeeItemException = async (req, res) => {
   try {
     const employeeId = Number(req.params.employeeId);
@@ -743,15 +873,11 @@ exports.toggleEmployeeItemException = async (req, res) => {
       });
 
       if (!row) {
-        return res
-          .status(404)
-          .json({ message: "Manual item not found for this employee" });
+        return res.status(404).json({ message: "Manual item not found for this employee" });
       }
 
       const next =
-        typeof body.isException === "boolean"
-          ? body.isException
-          : !Boolean(row.isException);
+        typeof body.isException === "boolean" ? body.isException : !Boolean(row.isException);
 
       row.isException = next;
       await row.save();
@@ -776,23 +902,18 @@ exports.toggleEmployeeItemException = async (req, res) => {
     });
 
     if (!day) {
-      return res
-        .status(404)
-        .json({ message: "Item not found for this employee" });
+      return res.status(404).json({ message: "Item not found for this employee" });
     }
 
     const latest = await getLatestDoneImport(day.month);
     if (latest && Number(latest.id) !== Number(day.importId)) {
       return res.status(409).json({
-        message:
-          "This item belongs to an older import. Please open the latest import month data.",
+        message: "This item belongs to an older import. Please open the latest import month data.",
       });
     }
 
     const next =
-      typeof body.isException === "boolean"
-        ? body.isException
-        : !Boolean(day.isException);
+      typeof body.isException === "boolean" ? body.isException : !Boolean(day.isException);
 
     day.isException = next;
     await day.save();
@@ -815,44 +936,36 @@ exports.toggleEmployeeItemException = async (req, res) => {
   }
 };
 
-
-function isValidDate(date) {
-  return !!date && /^\d{4}-\d{2}-\d{2}$/.test(date);
-}
-
 // POST /api/attendance/employee/:employeeId/manual
-// body: { date, direction: 'deduct'|'add'|'restore', amount?: number, days?: number, deductionDays?: number, note?: string }
 exports.addEmployeeManualItem = async (req, res) => {
   try {
     const employeeId = Number(req.params.employeeId);
     if (!employeeId || Number.isNaN(employeeId)) {
-      return res.status(400).json({ message: 'Invalid employeeId' });
+      return res.status(400).json({ message: "Invalid employeeId" });
     }
 
     const { date, direction, amount, days, deductionDays, note } = req.body || {};
 
     if (!isValidDate(date)) {
-      return res.status(400).json({ message: 'date is required: YYYY-MM-DD' });
+      return res.status(400).json({ message: "date is required: YYYY-MM-DD" });
     }
 
     const month = String(date).slice(0, 7);
     if (!isValidMonth(month)) {
-      return res.status(400).json({ message: 'Invalid month derived from date' });
+      return res.status(400).json({ message: "Invalid month derived from date" });
     }
 
-    // ✅ normalize direction
-    const dir = (direction === 'add' || direction === 'restore') ? 'add' : 'deduct';
+    const dir = direction === "add" || direction === "restore" ? "add" : "deduct";
 
-    // ✅ accept both days & deductionDays
-    const daysValue = typeof days !== 'undefined' ? days : deductionDays;
+    const daysValue = typeof days !== "undefined" ? days : deductionDays;
 
     const amountNum =
-      typeof amount === 'undefined' || amount === null || amount === ''
+      typeof amount === "undefined" || amount === null || amount === ""
         ? null
         : Number(amount);
 
     const daysNum =
-      typeof daysValue === 'undefined' || daysValue === null || daysValue === ''
+      typeof daysValue === "undefined" || daysValue === null || daysValue === ""
         ? null
         : Number(daysValue);
 
@@ -860,18 +973,18 @@ exports.addEmployeeManualItem = async (req, res) => {
     const hasDays = Number.isFinite(daysNum) && daysNum > 0;
 
     if (!hasAmount && !hasDays) {
-      return res.status(400).json({ message: 'Either amount or days is required (positive number).' });
+      return res.status(400).json({ message: "Either amount or days is required (positive number)." });
     }
     if (hasAmount && hasDays) {
-      return res.status(400).json({ message: 'Provide either amount OR days, not both.' });
+      return res.status(400).json({ message: "Provide either amount OR days, not both." });
     }
 
-    const emp = await Employee.findByPk(employeeId, { attributes: ['id'] });
-    if (!emp) return res.status(404).json({ message: 'Employee not found' });
+    const emp = await Employee.findByPk(employeeId, { attributes: ["id"] });
+    if (!emp) return res.status(404).json({ message: "Employee not found" });
 
     const imp = await getLatestDoneImport(month);
     if (!imp) {
-      return res.status(404).json({ message: 'No done import found for this month. Import sheet first.' });
+      return res.status(404).json({ message: "No done import found for this month. Import sheet first." });
     }
 
     const row = await AttendanceManualItem.create({
@@ -896,11 +1009,10 @@ exports.addEmployeeManualItem = async (req, res) => {
       importId: imp.id,
     });
   } catch (e) {
-    console.error('addEmployeeManualItem error:', e);
-    return res.status(500).json({ message: 'Internal server error' });
+    console.error("addEmployeeManualItem error:", e);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
-
 
 // DELETE /api/attendance/employee/:employeeId/manual/:manualId
 exports.deleteEmployeeManualItem = async (req, res) => {
@@ -909,17 +1021,17 @@ exports.deleteEmployeeManualItem = async (req, res) => {
     const manualId = Number(req.params.manualId);
 
     if (!employeeId || Number.isNaN(employeeId)) {
-      return res.status(400).json({ message: 'Invalid employeeId' });
+      return res.status(400).json({ message: "Invalid employeeId" });
     }
     if (!manualId || Number.isNaN(manualId)) {
-      return res.status(400).json({ message: 'Invalid manualId' });
+      return res.status(400).json({ message: "Invalid manualId" });
     }
 
     const row = await AttendanceManualItem.findOne({
       where: { id: manualId, employeeId },
     });
 
-    if (!row) return res.status(404).json({ message: 'Manual item not found' });
+    if (!row) return res.status(404).json({ message: "Manual item not found" });
 
     const month = row.month;
     await row.destroy();
@@ -929,7 +1041,7 @@ exports.deleteEmployeeManualItem = async (req, res) => {
 
     return res.json({ ok: true, deleted: true, month, importId: imp?.id || null });
   } catch (e) {
-    console.error('deleteEmployeeManualItem error:', e);
-    return res.status(500).json({ message: 'Internal server error' });
+    console.error("deleteEmployeeManualItem error:", e);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };

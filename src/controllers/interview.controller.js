@@ -1,5 +1,5 @@
 // src/controllers/interview.controller.js
-const { Op } = require('sequelize');
+const { Op } = require("sequelize");
 const {
   sequelize,
   Interview,
@@ -9,37 +9,40 @@ const {
   Auth,
   PendingRequest,
   PendingRequestItem,
-} = require('../models');
+  AuditLog,
+} = require("../models");
 
 const {
   upsertDriverFromInterviewId,
-} = require('../services/driver-sync.service');
+} = require("../services/driver-sync.service");
 
 const INTERVIEW_INCLUDES = [
-  { model: Client, as: 'client', attributes: ['id', 'name'] },
-  { model: Hub, as: 'hub', attributes: ['id', 'name'] },
-  { model: Zone, as: 'zone', attributes: ['id', 'name'] },
-  { model: Auth, as: 'accountManager', attributes: ['id', 'fullName'] },
-  { model: Auth, as: 'interviewer', attributes: ['id', 'fullName'] },
+  { model: Client, as: "client", attributes: ["id", "name"] },
+  { model: Hub, as: "hub", attributes: ["id", "name"] },
+  { model: Zone, as: "zone", attributes: ["id", "name"] },
+  { model: Auth, as: "accountManager", attributes: ["id", "fullName"] },
+  { model: Auth, as: "interviewer", attributes: ["id", "fullName"] },
 ];
 
-// ===== Vehicle Types (same as PendingRequestItem ENUM) =====
+/* =========================
+   Vehicle + Inventory helpers
+   ========================= */
+
 const VEHICLE_TYPES = [
-  'SEDAN',
-  'VAN',
-  'BIKE',
-  'DABABA',
-  'NKR',
-  'TRICYCLE',
-  'JUMBO_4',
-  'JUMBO_6',
-  'HELPER',
-  'DRIVER',
-  'WORKER',
+  "SEDAN",
+  "VAN",
+  "BIKE",
+  "DABABA",
+  "NKR",
+  "TRICYCLE",
+  "JUMBO_4",
+  "JUMBO_6",
+  "HELPER",
+  "DRIVER",
+  "WORKER",
 ];
 const VEHICLE_TYPES_SET = new Set(VEHICLE_TYPES);
 
-// ===== Priority ordering (pending_requests.priority) =====
 const PRIORITY_ORDER_SQL =
   "CASE " +
   "WHEN priority='urgent' THEN 0 " +
@@ -48,14 +51,12 @@ const PRIORITY_ORDER_SQL =
   "WHEN priority='low' THEN 3 " +
   "ELSE 9 END";
 
-// ===== helpers =====
-
 async function generateUniqueTicketNo(clientId) {
   const client = await Client.findByPk(clientId);
-  const rawName = client?.name || 'ACC';
+  const rawName = client?.name || "ACC";
 
-  const clean = rawName.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-  const prefix = (clean.slice(0, 3) || 'ACC').padEnd(3, 'X');
+  const clean = rawName.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  const prefix = (clean.slice(0, 3) || "ACC").padEnd(3, "X");
 
   for (let i = 0; i < 10; i++) {
     const random = Math.floor(1000 + Math.random() * 9000);
@@ -75,19 +76,57 @@ function addDays(date, days) {
 }
 
 function isCourierActive(v) {
-  return (v || '').toString().trim().toLowerCase() === 'active';
+  return (v || "").toString().trim().toLowerCase() === "active";
 }
 
 function normalizeVehicleType(v) {
-  if (v === null || v === undefined || v === '') return null;
+  if (v === null || v === undefined || v === "") return null;
   const x = String(v).trim().toUpperCase();
   return VEHICLE_TYPES_SET.has(x) ? x : null;
 }
 
+/* =========================
+   Manual audit (ONLY for special actions)
+   ========================= */
+
+async function writeAudit({
+  audit,
+  transaction,
+  entity,
+  entityId,
+  action,
+  summary,
+  changes,
+  meta,
+}) {
+  if (!audit || !AuditLog) return;
+
+  await AuditLog.create(
+    {
+      entity: String(entity),
+      entityId: Number(entityId),
+      action: String(action),
+      summary: summary || null,
+      changes: changes || null,
+      meta: meta || null,
+
+      requestId: audit.requestId || null,
+      actorId: audit.actorId || null,
+      ip: audit.ip || null,
+      userAgent: audit.userAgent || null,
+      method: audit.method || null,
+      path: audit.path || null,
+    },
+    { transaction },
+  );
+}
+
 /**
  * ✅ Idempotent inventory allocation (decrement) for an Interview
+ * + يسجل Audit Log واحد فقط (INVENTORY_DECREMENT)
+ * + ويمنع Hook UPDATE أثناء interview.save عبر audit.silent=true
  */
-async function applyPendingRequestDecrementForInterview(interview, t) {
+async function applyPendingRequestDecrementForInterview(interview, t, audit) {
   if (interview.inventoryAppliedAt) {
     return {
       applied: false,
@@ -101,24 +140,26 @@ async function applyPendingRequestDecrementForInterview(interview, t) {
   const vt = normalizeVehicleType(interview.vehicleType);
   if (!vt) {
     const err = new Error(
-      'vehicleType must be one of: ' + VEHICLE_TYPES.join(' | ')
+      "vehicleType must be one of: " + VEHICLE_TYPES.join(" | "),
     );
     err.statusCode = 400;
     throw err;
   }
 
   if (!interview.clientId) {
-    const err = new Error('clientId is required to apply pending request action');
+    const err = new Error(
+      "clientId is required to apply pending request action",
+    );
     err.statusCode = 400;
     throw err;
   }
   if (!interview.hubId) {
-    const err = new Error('hubId is required to apply pending request action');
+    const err = new Error("hubId is required to apply pending request action");
     err.statusCode = 400;
     throw err;
   }
   if (!interview.zoneId) {
-    const err = new Error('zoneId is required to apply pending request action');
+    const err = new Error("zoneId is required to apply pending request action");
     err.statusCode = 400;
     throw err;
   }
@@ -127,7 +168,7 @@ async function applyPendingRequestDecrementForInterview(interview, t) {
     clientId: interview.clientId,
     hubId: interview.hubId,
     zoneId: interview.zoneId,
-    status: { [Op.in]: ['APPROVED', 'PENDING'] },
+    status: { [Op.in]: ["APPROVED", "PENDING"] },
   };
 
   const header = await PendingRequest.findOne({
@@ -137,36 +178,33 @@ async function applyPendingRequestDecrementForInterview(interview, t) {
     order: [
       [
         sequelize.literal(
-          "CASE WHEN status='APPROVED' THEN 0 WHEN status='PENDING' THEN 1 ELSE 2 END"
+          "CASE WHEN status='APPROVED' THEN 0 WHEN status='PENDING' THEN 1 ELSE 2 END",
         ),
-        'ASC',
+        "ASC",
       ],
-      [sequelize.literal(PRIORITY_ORDER_SQL), 'ASC'],
-      ['requestDate', 'ASC'],
-      ['id', 'ASC'],
+      [sequelize.literal(PRIORITY_ORDER_SQL), "ASC"],
+      ["requestDate", "ASC"],
+      ["id", "ASC"],
     ],
   });
 
   if (!header) {
     const err = new Error(
-      'No PendingRequest found for this client/hub/zone with status APPROVED/PENDING'
+      "No PendingRequest found for this client/hub/zone with status APPROVED/PENDING",
     );
     err.statusCode = 404;
     throw err;
   }
 
   const item = await PendingRequestItem.findOne({
-    where: {
-      pendingRequestId: header.id,
-      vehicleType: vt,
-    },
+    where: { pendingRequestId: header.id, vehicleType: vt },
     transaction: t,
     lock: t.LOCK.UPDATE,
   });
 
   if (!item) {
     const err = new Error(
-      `No PendingRequestItem found for vehicleType=${vt} under pendingRequestId=${header.id}`
+      `No PendingRequestItem found for vehicleType=${vt} under pendingRequestId=${header.id}`,
     );
     err.statusCode = 404;
     throw err;
@@ -175,7 +213,7 @@ async function applyPendingRequestDecrementForInterview(interview, t) {
   const current = Number(item.vehicleCount || 0);
   if (current <= 0) {
     const err = new Error(
-      `No remaining capacity for vehicleType=${vt} under pendingRequestId=${header.id}`
+      `No remaining capacity for vehicleType=${vt} under pendingRequestId=${header.id}`,
     );
     err.statusCode = 409;
     throw err;
@@ -188,7 +226,27 @@ async function applyPendingRequestDecrementForInterview(interview, t) {
   interview.inventoryAppliedAt = new Date();
   interview.inventoryPendingRequestId = header.id;
   interview.inventoryPendingRequestItemId = item.id;
-  await interview.save({ transaction: t });
+
+  // ✅ prevent hook UPDATE log here
+  await interview.save({ transaction: t, audit: { ...audit, silent: true } });
+
+  // ✅ one explicit audit entry for inventory decrement
+  await writeAudit({
+    audit,
+    transaction: t,
+    entity: "Interview",
+    entityId: interview.id,
+    action: "INVENTORY_DECREMENT",
+    summary: `Inventory decremented for vehicleType=${vt}`,
+    changes: {
+      pendingRequestId: header.id,
+      pendingRequestItemId: item.id,
+      vehicleType: vt,
+      before: current,
+      after: next,
+    },
+    meta: { source: "applyPendingRequestDecrementForInterview" },
+  });
 
   return {
     applied: true,
@@ -201,7 +259,10 @@ async function applyPendingRequestDecrementForInterview(interview, t) {
   };
 }
 
-// GET /api/interviews
+/* =========================
+   GET /api/interviews
+   ========================= */
+
 exports.getAllInterviews = async (req, res) => {
   try {
     const { q, clientId, hubId, zoneId, status } = req.query;
@@ -223,46 +284,56 @@ exports.getAllInterviews = async (req, res) => {
 
     const interviews = await Interview.findAll({
       where,
-      order: [['id', 'DESC']],
+      order: [["id", "DESC"]],
       include: INTERVIEW_INCLUDES,
     });
 
     return res.json(interviews);
   } catch (error) {
-    console.error('getAllInterviews error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    console.error("getAllInterviews error:", error);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// GET /api/interviews/:id
+/* =========================
+   GET /api/interviews/:id
+   ========================= */
+
 exports.getInterviewById = async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (Number.isNaN(id)) {
-      return res.status(400).json({ message: 'Invalid id parameter' });
-    }
+    if (Number.isNaN(id))
+      return res.status(400).json({ message: "Invalid id parameter" });
 
     const interview = await Interview.findByPk(id, {
       include: INTERVIEW_INCLUDES,
     });
-    if (!interview) {
-      return res.status(404).json({ message: 'Interview not found' });
-    }
+    if (!interview)
+      return res.status(404).json({ message: "Interview not found" });
 
     return res.json(interview);
   } catch (error) {
-    console.error('getInterviewById error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    console.error("getInterviewById error:", error);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// POST /api/interviews
+/* =========================
+   POST /api/interviews
+   ========================= */
+
 exports.createInterview = async (req, res) => {
   const t = await sequelize.transaction();
   let newInterviewId = null;
   let inventoryAction = null;
 
   try {
+    // ✅ build audit at controller time (req.user is available now)
+    const audit = req.makeAudit?.({
+      summary: "Interview created",
+      meta: { controller: "Interview", op: "CREATE" },
+    });
+
     const {
       date,
       ticketNo,
@@ -277,6 +348,11 @@ exports.createInterview = async (req, res) => {
       zoneId,
       position,
       vehicleType,
+
+      vLicenseExpiryDate,
+      dLicenseExpiryDate,
+      idExpiryDate,
+
       accountManagerId,
       interviewerId,
       signedWithHr,
@@ -293,29 +369,32 @@ exports.createInterview = async (req, res) => {
 
     if (!courierName || !phoneNumber || !clientId) {
       throw Object.assign(
-        new Error('courierName, phoneNumber and clientId are required'),
-        { statusCode: 400 }
+        new Error("courierName, phoneNumber and clientId are required"),
+        { statusCode: 400 },
       );
     }
 
     const normalizedVehicleType =
-      typeof vehicleType === 'undefined' ? null : normalizeVehicleType(vehicleType);
+      typeof vehicleType === "undefined"
+        ? null
+        : normalizeVehicleType(vehicleType);
 
     if (vehicleType && !normalizedVehicleType) {
       throw Object.assign(
-        new Error('Invalid vehicleType. Must match PendingRequestItem ENUM.'),
-        { statusCode: 400 }
+        new Error("Invalid vehicleType. Must match PendingRequestItem ENUM."),
+        { statusCode: 400 },
       );
     }
 
-    let interviewDate = date || new Date();
+    const interviewDate = date || new Date();
 
     let finalTicketNo = ticketNo || null;
     let finalTicketExpiresAt = ticketExpiresAt || null;
 
-    const hrSigned =
-      (hrFeedback || '').toString().toLowerCase().includes('signed');
-
+    const hrSigned = (hrFeedback || "")
+      .toString()
+      .toLowerCase()
+      .includes("signed");
     if (hrSigned && !finalTicketNo) {
       finalTicketNo = await generateUniqueTicketNo(clientId);
       finalTicketExpiresAt = addDays(new Date(), 14);
@@ -336,6 +415,11 @@ exports.createInterview = async (req, res) => {
         zoneId,
         position,
         vehicleType: normalizedVehicleType,
+
+        vLicenseExpiryDate,
+        dLicenseExpiryDate,
+        idExpiryDate,
+
         accountManagerId,
         interviewerId,
         signedWithHr,
@@ -349,20 +433,24 @@ exports.createInterview = async (req, res) => {
         securityResult,
         notes,
       },
-      { transaction: t }
+      { transaction: t, audit },
     );
 
     newInterviewId = newInterview.id;
 
-    // ✅ IMPORTANT: sync driver row from interview داخل نفس transaction
-    await upsertDriverFromInterviewId(newInterview.id, { transaction: t });
+    // ✅ sync driver row داخل نفس transaction + audit (Driver hooks will log)
+    await upsertDriverFromInterviewId(newInterview.id, {
+      transaction: t,
+      audit,
+    });
 
     // ✅ Trigger inventory decrement (best-effort)
     if (isCourierActive(courierStatus)) {
       try {
         inventoryAction = await sequelize.transaction(
           { transaction: t },
-          async (tInv) => applyPendingRequestDecrementForInterview(newInterview, tInv)
+          async (tInv) =>
+            applyPendingRequestDecrementForInterview(newInterview, tInv, audit),
         );
       } catch (invErr) {
         inventoryAction = {
@@ -381,27 +469,30 @@ exports.createInterview = async (req, res) => {
       } catch (_) {}
     }
 
-    console.error('createInterview error:', error);
-    return res
-      .status(error.statusCode || 500)
-      .json({ message: error.message || 'Internal server error' });
+    console.error("createInterview error:", error);
+    return res.status(error.statusCode || 500).json({
+      message: error.message || "Internal server error",
+    });
   }
 
-  // ===== post-commit read =====
   try {
     const fullInterview = await Interview.findByPk(newInterviewId, {
       include: INTERVIEW_INCLUDES,
     });
-
-    const payload = fullInterview?.toJSON ? fullInterview.toJSON() : fullInterview;
+    const payload = fullInterview?.toJSON
+      ? fullInterview.toJSON()
+      : fullInterview;
     return res.status(201).json({ ...payload, inventoryAction });
   } catch (error) {
-    console.error('createInterview post-commit read error:', error);
+    console.error("createInterview post-commit read error:", error);
     return res.status(201).json({ id: newInterviewId, inventoryAction });
   }
 };
 
-// PUT /api/interviews/:id
+/* =========================
+   PUT /api/interviews/:id
+   ========================= */
+
 exports.updateInterview = async (req, res) => {
   const t = await sequelize.transaction();
   let inventoryAction = null;
@@ -410,7 +501,7 @@ exports.updateInterview = async (req, res) => {
     const id = Number(req.params.id);
     if (Number.isNaN(id)) {
       await t.rollback();
-      return res.status(400).json({ message: 'Invalid id parameter' });
+      return res.status(400).json({ message: "Invalid id parameter" });
     }
 
     const interview = await Interview.findByPk(id, {
@@ -419,52 +510,59 @@ exports.updateInterview = async (req, res) => {
     });
     if (!interview) {
       await t.rollback();
-      return res.status(404).json({ message: 'Interview not found' });
+      return res.status(404).json({ message: "Interview not found" });
     }
 
     const fields = [
-      'date',
-      'ticketNo',
-      'ticketExpiresAt',
-      'courierName',
-      'phoneNumber',
-      'nationalId',
-      'residence',
-      'clientId',
-      'hubId',
-      'zoneId',
-      'position',
-      'vehicleType',
-      'accountManagerId',
-      'interviewerId',
-      'signedWithHr',
-      'feedback',
-      'hrFeedback',
-      'crmFeedback',
-      'followUp1',
-      'followUp2',
-      'followUp3',
-      'courierStatus',
-      'securityResult',
-      'notes',
+      "date",
+      "ticketNo",
+      "ticketExpiresAt",
+      "courierName",
+      "phoneNumber",
+      "nationalId",
+      "residence",
+      "clientId",
+      "hubId",
+      "zoneId",
+      "position",
+      "vehicleType",
+      "vLicenseExpiryDate",
+      "dLicenseExpiryDate",
+      "idExpiryDate",
+      "accountManagerId",
+      "interviewerId",
+      "signedWithHr",
+      "feedback",
+      "hrFeedback",
+      "crmFeedback",
+      "followUp1",
+      "followUp2",
+      "followUp3",
+      "courierStatus",
+      "securityResult",
+      "notes",
     ];
 
-    const wasSigned = (interview.hrFeedback || '')
+    const changedFields = fields.filter((f) =>
+      Object.prototype.hasOwnProperty.call(req.body, f),
+    );
+
+    const wasSigned = (interview.hrFeedback || "")
       .toString()
       .toLowerCase()
-      .includes('signed');
-
+      .includes("signed");
     const wasActive = isCourierActive(interview.courierStatus);
 
     for (const f of fields) {
       if (Object.prototype.hasOwnProperty.call(req.body, f)) {
-        if (f === 'vehicleType') {
+        if (f === "vehicleType") {
           const raw = req.body[f];
           const vt = normalizeVehicleType(raw);
           if (raw && !vt) {
             await t.rollback();
             return res.status(400).json({
-              message: 'Invalid vehicleType. Must match PendingRequestItem ENUM.',
+              message:
+                "Invalid vehicleType. Must match PendingRequestItem ENUM.",
             });
           }
           interview.vehicleType = vt;
@@ -474,28 +572,46 @@ exports.updateInterview = async (req, res) => {
       }
     }
 
-    const isNowSigned = (interview.hrFeedback || '')
+    const isNowSigned = (interview.hrFeedback || "")
       .toString()
       .toLowerCase()
-      .includes('signed');
-
-    if (!wasSigned && isNowSigned && !interview.ticketNo && interview.clientId) {
+      .includes("signed");
+    if (
+      !wasSigned &&
+      isNowSigned &&
+      !interview.ticketNo &&
+      interview.clientId
+    ) {
       interview.ticketNo = await generateUniqueTicketNo(interview.clientId);
       interview.ticketExpiresAt = addDays(new Date(), 14);
     }
 
-    await interview.save({ transaction: t });
+    const shortChanged = changedFields.slice(0, 8).join(", ");
 
-    // ✅ IMPORTANT: sync driver row from interview داخل نفس transaction
-    await upsertDriverFromInterviewId(interview.id, { transaction: t });
+    const audit = req.makeAudit?.({
+      summary: changedFields.length
+        ? `Interview updated: ${shortChanged}`
+        : "Interview updated",
+      meta: { controller: "Interview", op: "UPDATE", changedFields },
+    });
+
+    // ✅ لازم تبعت fields هنا:
+    await interview.save({
+      transaction: t,
+      audit,
+      fields: changedFields,
+    });
+
+    // ✅ sync driver row داخل نفس transaction + audit
+    await upsertDriverFromInterviewId(interview.id, { transaction: t, audit });
 
     const isNowActive = isCourierActive(interview.courierStatus);
-
     if (!wasActive && isNowActive) {
       try {
         inventoryAction = await sequelize.transaction(
           { transaction: t },
-          async (tInv) => applyPendingRequestDecrementForInterview(interview, tInv)
+          async (tInv) =>
+            applyPendingRequestDecrementForInterview(interview, tInv, audit),
         );
       } catch (invErr) {
         inventoryAction = {
@@ -511,7 +627,6 @@ exports.updateInterview = async (req, res) => {
     const full = await Interview.findByPk(interview.id, {
       include: INTERVIEW_INCLUDES,
     });
-
     const payload = full?.toJSON ? full.toJSON() : full;
     return res.json({ ...payload, inventoryAction });
   } catch (error) {
@@ -521,30 +636,51 @@ exports.updateInterview = async (req, res) => {
       } catch (_) {}
     }
 
-    console.error('updateInterview error:', error);
-    return res
-      .status(error.statusCode || 500)
-      .json({ message: error.message || 'Internal server error' });
+    console.error("updateInterview error:", error);
+    return res.status(error.statusCode || 500).json({
+      message: error.message || "Internal server error",
+    });
   }
 };
 
-// DELETE /api/interviews/:id
+/* =========================
+   DELETE /api/interviews/:id
+   ========================= */
+
 exports.deleteInterview = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     const id = Number(req.params.id);
     if (Number.isNaN(id)) {
-      return res.status(400).json({ message: 'Invalid id parameter' });
+      await t.rollback();
+      return res.status(400).json({ message: "Invalid id parameter" });
     }
 
-    const interview = await Interview.findByPk(id);
+    const interview = await Interview.findByPk(id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
     if (!interview) {
-      return res.status(404).json({ message: 'Interview not found' });
+      await t.rollback();
+      return res.status(404).json({ message: "Interview not found" });
     }
 
-    await interview.destroy();
-    return res.json({ message: 'Interview deleted' });
+    const audit = req.makeAudit?.({
+      summary: `Interview deleted (${interview.courierName || "Unnamed"})`,
+      meta: { controller: "Interview", op: "DELETE" },
+    });
+
+    await interview.destroy({ transaction: t, audit });
+
+    await t.commit();
+    return res.json({ message: "Interview deleted" });
   } catch (error) {
-    console.error('deleteInterview error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    if (t && !t.finished) {
+      try {
+        await t.rollback();
+      } catch (_) {}
+    }
+    console.error("deleteInterview error:", error);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };

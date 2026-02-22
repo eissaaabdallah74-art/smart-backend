@@ -1,5 +1,9 @@
 // src/services/driver-sync.service.js
 const { Interview, Driver, Client, Hub, Zone, Auth } = require('../models');
+const {
+  DRIVER_CONTRACT_STATUSES,
+  SIGNED_WITH_HR_STATUSES,
+} = require('../constants/enums');
 
 const INTERVIEW_INCLUDES = [
   { model: Client, as: 'client', attributes: ['id', 'name'] },
@@ -20,24 +24,80 @@ function isHrSigned(interview) {
   return hr.includes('signed');
 }
 
-function deriveContractStatus(interview) {
-  // استخدم signedWithHr لو موجود، وإلا استنتج من hrFeedback
-  if (interview.signedWithHr) return interview.signedWithHr;
+/** ===== Normalizers (to protect ENUM writes) ===== */
+
+function normalizeDriverContractStatus(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const x = String(v).trim().toLowerCase();
+
+  if (x === 'active') return 'Active';
+  if (x === 'inactive') return 'Inactive';
+  if (x === 'resigned') return 'Resigned';
+  if (x === 'hold zone' || x === 'holdzone' || x === 'hold') return 'Hold zone';
+
+  if (
+    x === 'unreachable/reschedule' ||
+    x === 'unreachable' ||
+    x === 'reschedule' ||
+    x === 'unreachable - reschedule'
+  ) {
+    return 'Unreachable/Reschedule';
+  }
+
+  return null;
+}
+
+function normalizeSignedWithHr(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const x = String(v).trim().toLowerCase();
+
+  if (x === 'signed a contract with hr' || x === 'signed') {
+    return 'Signed A Contract With HR';
+  }
+  if (x === 'will think about our offers' || x === 'will think') {
+    return 'Will Think About Our Offers';
+  }
+  if (x === 'missing documents' || x === 'missing docs') {
+    return 'Missing documents';
+  }
+  if (x === 'unqualified') {
+    return 'Unqualified';
+  }
+
+  // If already exact value, keep it (ENUM exact match)
+  if (SIGNED_WITH_HR_STATUSES.includes(v)) return v;
+
+  return null;
+}
+
+function deriveSignedWithHr(interview) {
+  // priority: explicit signedWithHr field
+  const normalized = normalizeSignedWithHr(interview.signedWithHr);
+  if (normalized) return normalized;
+
+  // fallback: hrFeedback contains "signed"
   if (isHrSigned(interview)) return 'Signed A Contract With HR';
+
+  return null;
+}
+
+function deriveDriverContractStatus(interview) {
+  // prefer interview.courierStatus (source)
+  const normalized = normalizeDriverContractStatus(interview.courierStatus);
+  if (normalized) return normalized;
+
+  // fallback: if driver sends something else, return null
   return null;
 }
 
 function deriveHiringStatus(interview) {
-  // عندك في Interview اسمها courierStatus، وعندك في Driver اسمها hiringStatus
   return interview.courierStatus ?? null;
 }
 
 /**
  * Upsert Driver from Interview (by phoneNumber)
- * - يملأ clientName/hub/area من الـ relations (client/hub/zone)
- * - يملأ vehicleType, hiringStatus, contractStatus, signed
  */
-async function upsertDriverFromInterviewId(interviewId, { transaction } = {}) {
+async function upsertDriverFromInterviewId(interviewId, { transaction, audit } = {}) {
   const interview = await Interview.findByPk(interviewId, {
     include: INTERVIEW_INCLUDES,
     transaction,
@@ -48,6 +108,8 @@ async function upsertDriverFromInterviewId(interviewId, { transaction } = {}) {
   const phone = normPhone(interview.phoneNumber);
   if (!phone) return null;
 
+  const signedWithHr = deriveSignedWithHr(interview);
+
   const payload = {
     name: interview.courierName || '—',
     courierPhone: phone,
@@ -56,43 +118,48 @@ async function upsertDriverFromInterviewId(interviewId, { transaction } = {}) {
 
     clientName: interview.client?.name ?? null,
     hub: interview.hub?.name ?? null,
-
-    // غالبًا zone هي الـ "Area" عندك
     area: interview.zone?.name ?? null,
 
     vehicleType: interview.vehicleType ?? null,
 
+    // keep existing behavior too (if someone depends on it)
     hiringStatus: deriveHiringStatus(interview),
-    contractStatus: deriveContractStatus(interview),
 
-    signed: !!isHrSigned(interview),
+    // ✅ NEW write targets
+    contractStatus: deriveDriverContractStatus(interview),
+    signedWithHr,
+
+    signed: !!isHrSigned(interview) || signedWithHr === 'Signed A Contract With HR',
+
+    vLicenseExpiryDate: interview.vLicenseExpiryDate ?? null,
+    dLicenseExpiryDate: interview.dLicenseExpiryDate ?? null,
+    idExpiryDate: interview.idExpiryDate ?? null,
   };
 
-  // لو عندك day1Date في Interview DB ومش متسجل في الموديل، هيفضل null هنا
-  // لو ضفت day1Date للموديل هينقل تلقائيًا
-  if (Object.prototype.hasOwnProperty.call(interview, 'day1Date')) {
-    payload.day1Date = interview.day1Date ?? null;
+  const day1Date =
+    typeof interview.get === 'function' ? interview.get('day1Date') : interview.day1Date;
+  if (typeof day1Date !== 'undefined') {
+    payload.day1Date = day1Date ?? null;
   }
 
-  // Upsert by courierPhone
   const existing = await Driver.findOne({
     where: { courierPhone: phone },
     transaction,
   });
 
   if (!existing) {
-    const created = await Driver.create(payload, { transaction });
+    const created = await Driver.create(payload, { transaction, audit });
     return { driver: created, created: true };
   }
 
-  await existing.update(payload, { transaction });
+  await existing.update(payload, { transaction, audit });
   return { driver: existing, created: false };
 }
 
 /**
  * Backfill: create/update drivers for all interviews
  */
-async function backfillDriversFromInterviews({ transaction } = {}) {
+async function backfillDriversFromInterviews({ transaction, audit } = {}) {
   const interviews = await Interview.findAll({
     attributes: ['id'],
     order: [['id', 'ASC']],
@@ -103,7 +170,7 @@ async function backfillDriversFromInterviews({ transaction } = {}) {
   let updated = 0;
 
   for (const row of interviews) {
-    const res = await upsertDriverFromInterviewId(row.id, { transaction });
+    const res = await upsertDriverFromInterviewId(row.id, { transaction, audit });
     if (res?.created) created += 1;
     else if (res) updated += 1;
   }

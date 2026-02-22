@@ -1,4 +1,9 @@
 // src/models/driver.model.js
+const {
+  DRIVER_CONTRACT_STATUSES,
+  SIGNED_WITH_HR_STATUSES,
+} = require('../constants/enums');
+
 module.exports = (sequelize, DataTypes) => {
   const Driver = sequelize.define(
     'Driver',
@@ -9,13 +14,11 @@ module.exports = (sequelize, DataTypes) => {
         primaryKey: true,
       },
 
-      // الاسم الإنجليزي
       name: {
         type: DataTypes.STRING(150),
         allowNull: false,
       },
 
-      // الاسم بالعربي
       fullNameArabic: {
         type: DataTypes.STRING(150),
         allowNull: true,
@@ -26,9 +29,7 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(150),
         allowNull: true,
         validate: {
-          isEmail: {
-            msg: 'Email is invalid',
-          },
+          isEmail: { msg: 'Email is invalid' },
         },
       },
 
@@ -55,7 +56,6 @@ module.exports = (sequelize, DataTypes) => {
         field: 'courier_code',
       },
 
-      // من جدول clients (هياخد الاسم من الواجهة)
       clientName: {
         type: DataTypes.STRING(150),
         allowNull: true,
@@ -88,7 +88,6 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
 
-      // من الـ operation users
       pointOfContact: {
         type: DataTypes.STRING(150),
         allowNull: true,
@@ -106,7 +105,6 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
 
-      // من الـ HR users
       hrRepresentative: {
         type: DataTypes.STRING(150),
         allowNull: true,
@@ -154,8 +152,20 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: false,
       },
 
+      /**
+       * ✅ NEW: HR outcome as enum (moved from old Driver.contractStatus behavior)
+       */
+      signedWithHr: {
+        type: DataTypes.ENUM(...SIGNED_WITH_HR_STATUSES),
+        allowNull: true,
+        field: 'signed_with_hr',
+      },
+
+      /**
+       * ✅ NOW: Contract status means driver's operational status (as you requested)
+       */
       contractStatus: {
-        type: DataTypes.STRING(50),
+        type: DataTypes.ENUM(...DRIVER_CONTRACT_STATUSES),
         allowNull: true,
         field: 'contract_status',
       },
@@ -188,13 +198,37 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: true,
       },
+
+      // ===================== Audit Fields =====================
+      createdById: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        field: 'created_by_id',
+      },
+      updatedById: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        field: 'updated_by_id',
+      },
+      deletedById: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        field: 'deleted_by_id',
+      },
     },
     {
       tableName: 'drivers',
       timestamps: true,
       underscored: true,
+
+      paranoid: true,
+      deletedAt: 'deleted_at',
     }
   );
+
+  // optional helpers
+  Driver.CONTRACT_STATUSES = DRIVER_CONTRACT_STATUSES;
+  Driver.SIGNED_WITH_HR_STATUSES = SIGNED_WITH_HR_STATUSES;
 
   return Driver;
 };

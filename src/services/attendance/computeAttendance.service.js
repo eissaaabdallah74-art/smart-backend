@@ -1,3 +1,4 @@
+// src/services/attendance/computeAttendance.service.js
 const { Op } = require("sequelize");
 const {
   AttendanceImport,
@@ -6,13 +7,14 @@ const {
   AttendanceMonthlySummary,
   EmployeePayrollInsurance,
   AttendanceManualItem,
+  AttendanceRequest,
   sequelize,
 } = require("../../models");
 
 const GRACE_MAX_COUNT = 4;
 const GRACE_MAX_MINUTES = 15;
 
-// Policy (حسب اللي اتفقنا عليه)
+// Policy
 function calcLatePenaltyDays(effectiveLateMinutes, graceAvailable) {
   if (!effectiveLateMinutes || effectiveLateMinutes <= 0) {
     return { penalty: 0, graceApplied: false, reason: "no_late" };
@@ -22,16 +24,23 @@ function calcLatePenaltyDays(effectiveLateMinutes, graceAvailable) {
     return { penalty: 0, graceApplied: true, reason: "grace_used" };
   }
 
-  // after grace / not eligible
   if (effectiveLateMinutes <= 15)
     return { penalty: 0.25, graceApplied: false, reason: "late_0_15" };
   if (effectiveLateMinutes <= 30)
     return { penalty: 0.5, graceApplied: false, reason: "late_16_30" };
 
-  // IMPORTANT (افتراض): 31-44 = 0.5 ، 45+ = 1.0
   if (effectiveLateMinutes < 45)
     return { penalty: 0.5, graceApplied: false, reason: "late_31_44" };
   return { penalty: 1.0, graceApplied: false, reason: "late_45_plus" };
+}
+
+function getMonthBounds(month) {
+  const [y, m] = String(month).split("-").map((x) => Number(x));
+  const lastDay = new Date(y, m, 0).getDate();
+  return {
+    start: `${month}-01`,
+    end: `${month}-${String(lastDay).padStart(2, "0")}`,
+  };
 }
 
 async function computeMonthForImport(importId) {
@@ -45,8 +54,8 @@ async function computeMonthForImport(importId) {
 
     const month = imp.month;
     const workingDays = imp.workingDaysCount || 0;
+    const { start, end } = getMonthBounds(month);
 
-    // Load all days for this import
     const days = await AttendanceDay.findAll({
       where: { importId },
       order: [
@@ -57,19 +66,20 @@ async function computeMonthForImport(importId) {
       lock: t.LOCK.UPDATE,
     });
 
-    // Load excuses in this month (for all employees)
+    // legacy excuses
     const excuses = await AttendanceExcuse.findAll({
-      where: {
-        date: {
-          [Op.gte]: `${month}-01`,
-          [Op.lte]: `${month}-31`,
-        },
-      },
+      where: { date: { [Op.between]: [start, end] } },
       transaction: t,
     });
 
+    // ✅ approved requests
+    const approvedRequests = await AttendanceRequest.findAll({
+      where: { month, status: "approved" },
+      transaction: t,
+    });
 
-        const manualRows = await AttendanceManualItem.findAll({
+    // manual adjustments
+    const manualRows = await AttendanceManualItem.findAll({
       where: { month },
       transaction: t,
       lock: t.LOCK.UPDATE,
@@ -81,41 +91,56 @@ async function computeMonthForImport(importId) {
       manualByEmp.get(m.employeeId).push(m);
     }
 
-
-    // Map excuses: employeeId -> dateISO -> minutes
+    // legacy excuses map: emp__date -> minutes
     const excuseByEmpDate = new Map();
     const excuseStats = new Map(); // employeeId -> { totalMinutes, count }
 
     for (const ex of excuses) {
       const key = `${ex.employeeId}__${ex.date}`;
-      excuseByEmpDate.set(
-        key,
-        (excuseByEmpDate.get(key) || 0) + Number(ex.minutes || 0)
-      );
+      excuseByEmpDate.set(key, (excuseByEmpDate.get(key) || 0) + Number(ex.minutes || 0));
 
-      const st = excuseStats.get(ex.employeeId) || {
-        totalMinutes: 0,
-        count: 0,
-      };
+      const st = excuseStats.get(ex.employeeId) || { totalMinutes: 0, count: 0 };
       st.totalMinutes += Number(ex.minutes || 0);
       st.count += 1;
       excuseStats.set(ex.employeeId, st);
     }
 
-    // Group by employee
+    // approved requests maps
+    const approvedExcuseByEmpDate = new Map(); // excuse_minutes
+    const approvedLeaveByEmpDate = new Map();  // leave_day -> leaveType
+    const approvedReqStats = new Map();        // employeeId -> { totalMinutes, count }
+
+    for (const r of approvedRequests) {
+      const key = `${r.employeeId}__${r.date}`;
+
+      if (r.type === "excuse_minutes") {
+        const m = Number(r.minutes || 0);
+        if (m > 0) {
+          approvedExcuseByEmpDate.set(key, (approvedExcuseByEmpDate.get(key) || 0) + m);
+
+          const st = approvedReqStats.get(r.employeeId) || { totalMinutes: 0, count: 0 };
+          st.totalMinutes += m;
+          st.count += 1;
+          approvedReqStats.set(r.employeeId, st);
+        }
+      }
+
+      if (r.type === "leave_day") {
+        const lt = r.leaveType || "annual";
+        approvedLeaveByEmpDate.set(key, lt); // annual | sick | errand | ...
+      }
+    }
+
+    // group days by employee
     const byEmp = new Map();
     for (const d of days) {
       if (!byEmp.has(d.employeeId)) byEmp.set(d.employeeId, []);
       byEmp.get(d.employeeId).push(d);
     }
 
-    // Delete previous summaries for this import (idempotent)
-    await AttendanceMonthlySummary.destroy({
-      where: { importId },
-      transaction: t,
-    });
+    // idempotent summaries
+    await AttendanceMonthlySummary.destroy({ where: { importId }, transaction: t });
 
-    // Compute per employee and upsert days
     for (const [employeeId, empDays] of byEmp.entries()) {
       let graceUsed = 0;
 
@@ -128,17 +153,48 @@ async function computeMonthForImport(importId) {
 
       for (const d of empDays) {
         const isException = !!d.isException;
+        const dayKey = `${employeeId}__${d.date}`;
 
+        const approvedLeaveType = approvedLeaveByEmpDate.get(dayKey) || null;
+
+        // ✅ Leave day handling
+        if (approvedLeaveType) {
+          const lt = String(approvedLeaveType);
+
+          // annual / errand => no salary deduction
+          // sick => quarter day salary deduction
+          const sickPenalty = lt === "sick" ? 0.25 : 0;
+
+          d.excuseMinutesApplied = 0;
+          d.effectiveLateMinutes = 0;
+
+          d.graceApplied = false;
+          d.latePenaltyDays = 0;
+
+          d.absentPenaltyDays = sickPenalty;
+          d.totalPenaltyDays = sickPenalty;
+
+          d.policyReason = `leave_${lt}_approved`;
+
+          if (!isException && sickPenalty > 0) {
+            totalAbsentPenaltyDays += sickPenalty; // treat as "absence-like" penalty
+          }
+
+          await d.save({ transaction: t });
+          continue;
+        }
+
+        // ✅ excuse minutes = legacy + approved requests
         let excuseMin = 0;
-        const exKey = `${employeeId}__${d.date}`;
-        if (excuseByEmpDate.has(exKey)) excuseMin = excuseByEmpDate.get(exKey);
+        if (excuseByEmpDate.has(dayKey)) excuseMin += Number(excuseByEmpDate.get(dayKey) || 0);
+        if (approvedExcuseByEmpDate.has(dayKey))
+          excuseMin += Number(approvedExcuseByEmpDate.get(dayKey) || 0);
 
-        // absent -> full day
+        // absent (no approved leave)
         if (d.absent) {
           d.excuseMinutesApplied = 0;
           d.effectiveLateMinutes = 0;
 
-          // لو exception: ما تستهلكش grace وما تدخلش totals، لكن نحتفظ بقيم penalty للعرض
           d.graceApplied = false;
           d.latePenaltyDays = 0;
           d.absentPenaltyDays = 1.0;
@@ -158,13 +214,11 @@ async function computeMonthForImport(importId) {
         const lateMin = Number(d.lateMinutes || 0);
         const effectiveLate = Math.max(lateMin - Number(excuseMin || 0), 0);
 
-        // ✅ totals should reflect penalized (non-exception) items only
         if (!isException) {
           totalLate += lateMin;
           totalEffectiveLate += effectiveLate;
         }
 
-        // grace availability: only for non-exception days
         const graceAvailable =
           !isException &&
           effectiveLate > 0 &&
@@ -178,12 +232,12 @@ async function computeMonthForImport(importId) {
         d.excuseMinutesApplied = excuseMin;
         d.effectiveLateMinutes = effectiveLate;
         d.graceApplied = r.graceApplied;
+
         d.latePenaltyDays = r.penalty;
         d.absentPenaltyDays = 0;
         d.totalPenaltyDays = Number(r.penalty || 0);
         d.policyReason = r.reason;
 
-        // ✅ accumulate penalties only if not exception
         if (!isException) {
           totalLatePenaltyDays += Number(r.penalty || 0);
         }
@@ -191,59 +245,61 @@ async function computeMonthForImport(importId) {
         await d.save({ transaction: t });
       }
 
-      const totals = {
-        totalPenaltyDays:
-          Number(totalLatePenaltyDays) + Number(totalAbsentPenaltyDays),
-      };
+      const totalPenaltyDays = Number(totalLatePenaltyDays) + Number(totalAbsentPenaltyDays);
 
-      // Payroll calculation
+      // Payroll calculation (✅ NET first, fallback to GROSS)
       const payroll = await EmployeePayrollInsurance.findOne({
         where: { employeeId },
         transaction: t,
       });
-      const grossSalary = payroll?.grossSalary ?? null;
+
+      const salaryBase =
+        payroll?.netSalary ??
+        payroll?.net_salary ??
+        payroll?.grossSalary ??
+        payroll?.gross_salary ??
+        null;
 
       let dayRate = null;
       let deductionAmount = null;
 
-      if (grossSalary !== null && workingDays > 0) {
-        dayRate = Number(grossSalary) / Number(workingDays);
-        deductionAmount = Number(dayRate) * Number(totals.totalPenaltyDays);
+      if (salaryBase !== null && workingDays > 0) {
+        dayRate = Number(salaryBase) / Number(workingDays);
+        deductionAmount = Number(dayRate) * Number(totalPenaltyDays);
       }
 
-
-            // ✅ apply manual adjustments into deductionAmount
+      // manual adjustments
       const empManual = manualByEmp.get(employeeId) || [];
       let manualDelta = 0;
 
       for (const m of empManual) {
         if (m.isException) continue;
 
-        const dir = String(m.direction || 'deduct').toLowerCase();
-        const sign = dir === 'add' ? -1 : 1;
+        const dir = String(m.direction || "deduct").toLowerCase();
+        const sign = dir === "add" ? -1 : 1;
 
         let val = 0;
-        if (m.amount !== null && typeof m.amount !== 'undefined') {
+        if (m.amount !== null && typeof m.amount !== "undefined") {
           val = Number(m.amount) || 0;
-        } else if (m.days !== null && typeof m.days !== 'undefined') {
-          const d = Number(m.days) || 0;
-          if (dayRate !== null && d > 0) val = Number(dayRate) * d;
+        } else if (m.days !== null && typeof m.days !== "undefined") {
+          const dd = Number(m.days) || 0;
+          if (dayRate !== null && dd > 0) val = Number(dayRate) * dd;
         }
 
         manualDelta += sign * val;
       }
 
       if (deductionAmount === null) {
-        // لو مفيش salary/dayRate بس فيه manual amount صريح
         deductionAmount = manualDelta !== 0 ? Number(manualDelta) : null;
       } else {
         deductionAmount = Number(deductionAmount) + Number(manualDelta);
       }
 
-      // clamp: no negative deduction
       if (deductionAmount !== null && deductionAmount < 0) deductionAmount = 0;
 
-      const exSt = excuseStats.get(employeeId) || { totalMinutes: 0, count: 0 };
+      // summary excuses = legacy + approved request excuses
+      const legacy = excuseStats.get(employeeId) || { totalMinutes: 0, count: 0 };
+      const reqSt = approvedReqStats.get(employeeId) || { totalMinutes: 0, count: 0 };
 
       await AttendanceMonthlySummary.create(
         {
@@ -255,15 +311,16 @@ async function computeMonthForImport(importId) {
           totalLateMinutes: totalLate,
           totalEffectiveLateMinutes: totalEffectiveLate,
 
-          totalExcuseMinutes: exSt.totalMinutes,
-          excusesCount: exSt.count,
+          totalExcuseMinutes: Number(legacy.totalMinutes) + Number(reqSt.totalMinutes),
+          excusesCount: Number(legacy.count) + Number(reqSt.count),
 
           absentDays,
           totalLatePenaltyDays,
           totalAbsentPenaltyDays,
-          totalPenaltyDays: totals.totalPenaltyDays,
+          totalPenaltyDays,
 
-          salaryGrossUsed: grossSalary,
+          // NOTE: column name kept, but value is NET base when available
+          salaryGrossUsed: salaryBase,
           dayRate: dayRate === null ? null : dayRate,
           deductionAmount: deductionAmount === null ? null : deductionAmount,
           computedAt: new Date(),
