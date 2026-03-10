@@ -2,15 +2,19 @@
 const express = require('express');
 const router = express.Router();
 const clientController = require('../controllers/client.controller');
+const authMiddleware = require('../middlewares/auth.middleware');
+
+// كل routes محمية
+router.use(authMiddleware);
 
 // GET /api/clients
 router.get('/', clientController.getAllClients);
 
+// ✅ BULK IMPORT لازم قبل /:id
+router.post('/bulk-import', clientController.bulkImportClients);
+
 // GET /api/clients/:id
 router.get('/:id', clientController.getClientById);
-
-// BULK IMPORT /api/clients/bulk-import
-router.post('/bulk-import', clientController.bulkImportClients);
 
 // POST /api/clients
 router.post('/', clientController.createClient);

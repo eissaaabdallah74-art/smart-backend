@@ -182,10 +182,17 @@ module.exports = (sequelize, DataTypes) => {
         field: "security_result",
       },
 
+      vendorId: {
+  type: DataTypes.INTEGER.UNSIGNED,
+  allowNull: false, // ✅ interview لازم يحدد vendor
+  field: "vendor_id",
+},
+
       notes: {
         type: DataTypes.TEXT,
         allowNull: true,
       },
+      
 
       // ===================== Audit Fields =====================
       createdById: {

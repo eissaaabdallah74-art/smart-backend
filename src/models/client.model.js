@@ -36,11 +36,21 @@ module.exports = (sequelize, DataTypes) => {
           },
         },
       },
+
+      // legacy (اختياري للعرض/بحث قديم)
       accountManager: {
         type: DataTypes.STRING(150),
         allowNull: true,
         field: 'account_manager',
       },
+
+      // ✅ NEW FK (Account Manager User Id)
+      accountManagerId: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        field: 'account_manager_id',
+      },
+
       // الحقول الجديدة
       contractDate: {
         type: DataTypes.DATEONLY,

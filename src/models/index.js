@@ -16,6 +16,10 @@ db.Hub = require("./hub.model")(sequelize, DataTypes);
 db.Zone = require("./zone.model")(sequelize, DataTypes);
 db.Interview = require("./interview.model")(sequelize, DataTypes);
 
+db.Vendor = require("./vendor.model")(sequelize, DataTypes);
+
+db.DriverLoan = require("./driver-loan.model")(sequelize, DataTypes);
+
 // ===================== Audit Logs =====================
 db.AuditLog = require("./audit-log.model")(sequelize, DataTypes);
 
@@ -110,6 +114,18 @@ db.ClientContract.belongsTo(db.Client, {
   foreignKey: { name: "clientId", field: "client_id" },
   as: "client",
 });
+
+
+// ✅ Client ↔ AccountManager(Auth)
+db.Client.belongsTo(db.Auth, {
+  foreignKey: { name: 'accountManagerId', field: 'account_manager_id' },
+  as: 'accountManagerUser',
+});
+db.Auth.hasMany(db.Client, {
+  foreignKey: { name: 'accountManagerId', field: 'account_manager_id' },
+  as: 'managedClients',
+});
+
 
 // Client ↔ Hub
 db.Client.hasMany(db.Hub, { foreignKey: "client_id", as: "hubs" });
@@ -337,6 +353,38 @@ db.AttendanceRequest.belongsTo(db.Employee, {
   as: "employee",
 });
 
+
+// Driver ↔ DriverLoan
+db.Driver.hasMany(db.DriverLoan, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "loans",
+  onDelete: "CASCADE",
+  hooks: true,
+});
+
+db.DriverLoan.belongsTo(db.Driver, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "driver",
+});
+
+// DriverLoan ↔ Auth (audit / decision)
+db.DriverLoan.belongsTo(db.Auth, {
+  foreignKey: "created_by_id",
+  as: "createdBy",
+});
+db.DriverLoan.belongsTo(db.Auth, {
+  foreignKey: "updated_by_id",
+  as: "updatedBy",
+});
+db.DriverLoan.belongsTo(db.Auth, {
+  foreignKey: "deleted_by_id",
+  as: "deletedBy",
+});
+db.DriverLoan.belongsTo(db.Auth, {
+  foreignKey: "decided_by_id",
+  as: "decidedBy",
+});
+
 // ===================== Employee Loans Relations =====================
 
 // Employee ↔ LoanPolicy (one per employee)
@@ -455,6 +503,15 @@ db.CompanyDocument.belongsTo(db.DocumentType, {
   as: "type",
 });
 
+
+// Vendor ↔ Driver (mandatory)
+db.Vendor.hasMany(db.Driver, { foreignKey: "vendor_id", as: "drivers" });
+db.Driver.belongsTo(db.Vendor, { foreignKey: "vendor_id", as: "vendor" });
+
+// Vendor ↔ Interview (so you can pick vendor on create interview)
+db.Vendor.hasMany(db.Interview, { foreignKey: "vendor_id", as: "interviews" });
+db.Interview.belongsTo(db.Vendor, { foreignKey: "vendor_id", as: "vendor" });
+
 // ===================== Attach Audit Hooks =====================
 const { attachAuditHooks } = require("../services/audit-hooks.service");
 
@@ -473,5 +530,12 @@ attachAuditHooks({
   entityType: "CompanyDocument",
   AuditLogModel: db.AuditLog,
 });
+
+attachAuditHooks({
+  model: db.DriverLoan,
+  entityType: "DriverLoan",
+  AuditLogModel: db.AuditLog,
+});
+
 
 module.exports = db;

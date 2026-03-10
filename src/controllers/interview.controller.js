@@ -10,6 +10,7 @@ const {
   PendingRequest,
   PendingRequestItem,
   AuditLog,
+  Vendor,
 } = require("../models");
 
 const {
@@ -20,6 +21,7 @@ const INTERVIEW_INCLUDES = [
   { model: Client, as: "client", attributes: ["id", "name"] },
   { model: Hub, as: "hub", attributes: ["id", "name"] },
   { model: Zone, as: "zone", attributes: ["id", "name"] },
+  { model: Vendor, as: "vendor", attributes: ["id", "name", "code"] }, // ✅ NEW
   { model: Auth, as: "accountManager", attributes: ["id", "fullName"] },
   { model: Auth, as: "interviewer", attributes: ["id", "fullName"] },
 ];
@@ -86,6 +88,28 @@ function normalizeVehicleType(v) {
 }
 
 /* =========================
+   Vendor helper
+   ========================= */
+
+async function assertVendorExists(vendorId, { transaction } = {}) {
+  const id = Number(vendorId);
+  if (!id || Number.isNaN(id)) {
+    const err = new Error("vendorId is required and must be a valid number");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const vendor = await Vendor.findByPk(id, { transaction });
+  if (!vendor) {
+    const err = new Error("Vendor not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  return vendor;
+}
+
+/* =========================
    Manual audit (ONLY for special actions)
    ========================= */
 
@@ -117,7 +141,7 @@ async function writeAudit({
       method: audit.method || null,
       path: audit.path || null,
     },
-    { transaction },
+    { transaction }
   );
 }
 
@@ -140,16 +164,14 @@ async function applyPendingRequestDecrementForInterview(interview, t, audit) {
   const vt = normalizeVehicleType(interview.vehicleType);
   if (!vt) {
     const err = new Error(
-      "vehicleType must be one of: " + VEHICLE_TYPES.join(" | "),
+      "vehicleType must be one of: " + VEHICLE_TYPES.join(" | ")
     );
     err.statusCode = 400;
     throw err;
   }
 
   if (!interview.clientId) {
-    const err = new Error(
-      "clientId is required to apply pending request action",
-    );
+    const err = new Error("clientId is required to apply pending request action");
     err.statusCode = 400;
     throw err;
   }
@@ -178,7 +200,7 @@ async function applyPendingRequestDecrementForInterview(interview, t, audit) {
     order: [
       [
         sequelize.literal(
-          "CASE WHEN status='APPROVED' THEN 0 WHEN status='PENDING' THEN 1 ELSE 2 END",
+          "CASE WHEN status='APPROVED' THEN 0 WHEN status='PENDING' THEN 1 ELSE 2 END"
         ),
         "ASC",
       ],
@@ -190,7 +212,7 @@ async function applyPendingRequestDecrementForInterview(interview, t, audit) {
 
   if (!header) {
     const err = new Error(
-      "No PendingRequest found for this client/hub/zone with status APPROVED/PENDING",
+      "No PendingRequest found for this client/hub/zone with status APPROVED/PENDING"
     );
     err.statusCode = 404;
     throw err;
@@ -204,7 +226,7 @@ async function applyPendingRequestDecrementForInterview(interview, t, audit) {
 
   if (!item) {
     const err = new Error(
-      `No PendingRequestItem found for vehicleType=${vt} under pendingRequestId=${header.id}`,
+      `No PendingRequestItem found for vehicleType=${vt} under pendingRequestId=${header.id}`
     );
     err.statusCode = 404;
     throw err;
@@ -213,7 +235,7 @@ async function applyPendingRequestDecrementForInterview(interview, t, audit) {
   const current = Number(item.vehicleCount || 0);
   if (current <= 0) {
     const err = new Error(
-      `No remaining capacity for vehicleType=${vt} under pendingRequestId=${header.id}`,
+      `No remaining capacity for vehicleType=${vt} under pendingRequestId=${header.id}`
     );
     err.statusCode = 409;
     throw err;
@@ -265,7 +287,7 @@ async function applyPendingRequestDecrementForInterview(interview, t, audit) {
 
 exports.getAllInterviews = async (req, res) => {
   try {
-    const { q, clientId, hubId, zoneId, status } = req.query;
+    const { q, clientId, hubId, zoneId, status, vendorId } = req.query;
     const where = {};
 
     if (q) {
@@ -275,11 +297,13 @@ exports.getAllInterviews = async (req, res) => {
         { phoneNumber: like },
         { nationalId: like },
         { residence: like },
+        { ticketNo: like },
       ];
     }
     if (clientId) where.clientId = Number(clientId);
     if (hubId) where.hubId = Number(hubId);
     if (zoneId) where.zoneId = Number(zoneId);
+    if (vendorId) where.vendorId = Number(vendorId); // ✅ NEW
     if (status) where.courierStatus = status;
 
     const interviews = await Interview.findAll({
@@ -328,7 +352,6 @@ exports.createInterview = async (req, res) => {
   let inventoryAction = null;
 
   try {
-    // ✅ build audit at controller time (req.user is available now)
     const audit = req.makeAudit?.({
       summary: "Interview created",
       meta: { controller: "Interview", op: "CREATE" },
@@ -346,6 +369,7 @@ exports.createInterview = async (req, res) => {
       clientId,
       hubId,
       zoneId,
+      vendorId, // ✅ NEW
       position,
       vehicleType,
 
@@ -370,19 +394,20 @@ exports.createInterview = async (req, res) => {
     if (!courierName || !phoneNumber || !clientId) {
       throw Object.assign(
         new Error("courierName, phoneNumber and clientId are required"),
-        { statusCode: 400 },
+        { statusCode: 400 }
       );
     }
 
+    // ✅ vendorId required + exists
+    await assertVendorExists(vendorId, { transaction: t });
+
     const normalizedVehicleType =
-      typeof vehicleType === "undefined"
-        ? null
-        : normalizeVehicleType(vehicleType);
+      typeof vehicleType === "undefined" ? null : normalizeVehicleType(vehicleType);
 
     if (vehicleType && !normalizedVehicleType) {
       throw Object.assign(
         new Error("Invalid vehicleType. Must match PendingRequestItem ENUM."),
-        { statusCode: 400 },
+        { statusCode: 400 }
       );
     }
 
@@ -391,10 +416,7 @@ exports.createInterview = async (req, res) => {
     let finalTicketNo = ticketNo || null;
     let finalTicketExpiresAt = ticketExpiresAt || null;
 
-    const hrSigned = (hrFeedback || "")
-      .toString()
-      .toLowerCase()
-      .includes("signed");
+    const hrSigned = (hrFeedback || "").toString().toLowerCase().includes("signed");
     if (hrSigned && !finalTicketNo) {
       finalTicketNo = await generateUniqueTicketNo(clientId);
       finalTicketExpiresAt = addDays(new Date(), 14);
@@ -413,6 +435,7 @@ exports.createInterview = async (req, res) => {
         clientId,
         hubId,
         zoneId,
+        vendorId: Number(vendorId), // ✅ NEW
         position,
         vehicleType: normalizedVehicleType,
 
@@ -433,12 +456,12 @@ exports.createInterview = async (req, res) => {
         securityResult,
         notes,
       },
-      { transaction: t, audit },
+      { transaction: t, audit }
     );
 
     newInterviewId = newInterview.id;
 
-    // ✅ sync driver row داخل نفس transaction + audit (Driver hooks will log)
+    // ✅ sync driver row داخل نفس transaction + audit
     await upsertDriverFromInterviewId(newInterview.id, {
       transaction: t,
       audit,
@@ -450,7 +473,7 @@ exports.createInterview = async (req, res) => {
         inventoryAction = await sequelize.transaction(
           { transaction: t },
           async (tInv) =>
-            applyPendingRequestDecrementForInterview(newInterview, tInv, audit),
+            applyPendingRequestDecrementForInterview(newInterview, tInv, audit)
         );
       } catch (invErr) {
         inventoryAction = {
@@ -479,9 +502,7 @@ exports.createInterview = async (req, res) => {
     const fullInterview = await Interview.findByPk(newInterviewId, {
       include: INTERVIEW_INCLUDES,
     });
-    const payload = fullInterview?.toJSON
-      ? fullInterview.toJSON()
-      : fullInterview;
+    const payload = fullInterview?.toJSON ? fullInterview.toJSON() : fullInterview;
     return res.status(201).json({ ...payload, inventoryAction });
   } catch (error) {
     console.error("createInterview post-commit read error:", error);
@@ -524,6 +545,7 @@ exports.updateInterview = async (req, res) => {
       "clientId",
       "hubId",
       "zoneId",
+      "vendorId", // ✅ NEW
       "position",
       "vehicleType",
       "vLicenseExpiryDate",
@@ -544,13 +566,10 @@ exports.updateInterview = async (req, res) => {
     ];
 
     const changedFields = fields.filter((f) =>
-      Object.prototype.hasOwnProperty.call(req.body, f),
+      Object.prototype.hasOwnProperty.call(req.body, f)
     );
 
-    const wasSigned = (interview.hrFeedback || "")
-      .toString()
-      .toLowerCase()
-      .includes("signed");
+    const wasSigned = (interview.hrFeedback || "").toString().toLowerCase().includes("signed");
     const wasActive = isCourierActive(interview.courierStatus);
 
     for (const f of fields) {
@@ -561,27 +580,22 @@ exports.updateInterview = async (req, res) => {
           if (raw && !vt) {
             await t.rollback();
             return res.status(400).json({
-              message:
-                "Invalid vehicleType. Must match PendingRequestItem ENUM.",
+              message: "Invalid vehicleType. Must match PendingRequestItem ENUM.",
             });
           }
           interview.vehicleType = vt;
+        } else if (f === "vendorId") {
+          // ✅ validate vendor
+          await assertVendorExists(req.body[f], { transaction: t });
+          interview.vendorId = Number(req.body[f]);
         } else {
           interview[f] = req.body[f];
         }
       }
     }
 
-    const isNowSigned = (interview.hrFeedback || "")
-      .toString()
-      .toLowerCase()
-      .includes("signed");
-    if (
-      !wasSigned &&
-      isNowSigned &&
-      !interview.ticketNo &&
-      interview.clientId
-    ) {
+    const isNowSigned = (interview.hrFeedback || "").toString().toLowerCase().includes("signed");
+    if (!wasSigned && isNowSigned && !interview.ticketNo && interview.clientId) {
       interview.ticketNo = await generateUniqueTicketNo(interview.clientId);
       interview.ticketExpiresAt = addDays(new Date(), 14);
     }
@@ -589,13 +603,10 @@ exports.updateInterview = async (req, res) => {
     const shortChanged = changedFields.slice(0, 8).join(", ");
 
     const audit = req.makeAudit?.({
-      summary: changedFields.length
-        ? `Interview updated: ${shortChanged}`
-        : "Interview updated",
+      summary: changedFields.length ? `Interview updated: ${shortChanged}` : "Interview updated",
       meta: { controller: "Interview", op: "UPDATE", changedFields },
     });
 
-    // ✅ لازم تبعت fields هنا:
     await interview.save({
       transaction: t,
       audit,
@@ -610,8 +621,7 @@ exports.updateInterview = async (req, res) => {
       try {
         inventoryAction = await sequelize.transaction(
           { transaction: t },
-          async (tInv) =>
-            applyPendingRequestDecrementForInterview(interview, tInv, audit),
+          async (tInv) => applyPendingRequestDecrementForInterview(interview, tInv, audit)
         );
       } catch (invErr) {
         inventoryAction = {

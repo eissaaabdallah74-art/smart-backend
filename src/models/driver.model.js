@@ -1,7 +1,7 @@
-// src/models/driver.model.js
 const {
   DRIVER_CONTRACT_STATUSES,
   SIGNED_WITH_HR_STATUSES,
+  DRIVER_PAYMENT_METHODS,
 } = require('../constants/enums');
 
 module.exports = (sequelize, DataTypes) => {
@@ -152,18 +152,12 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: false,
       },
 
-      /**
-       * ✅ NEW: HR outcome as enum (moved from old Driver.contractStatus behavior)
-       */
       signedWithHr: {
         type: DataTypes.ENUM(...SIGNED_WITH_HR_STATUSES),
         allowNull: true,
         field: 'signed_with_hr',
       },
 
-      /**
-       * ✅ NOW: Contract status means driver's operational status (as you requested)
-       */
       contractStatus: {
         type: DataTypes.ENUM(...DRIVER_CONTRACT_STATUSES),
         allowNull: true,
@@ -194,6 +188,60 @@ module.exports = (sequelize, DataTypes) => {
         field: 'exception_by',
       },
 
+      vendorId: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: false,
+        field: 'vendor_id',
+      },
+
+      // ===================== NEW Financial Fields =====================
+      monthlySalary: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
+        field: 'monthly_salary',
+        validate: {
+          isValidMonthlySalary(value) {
+            if (value === null || value === undefined || value === '') return;
+            const num = Number(value);
+            if (Number.isNaN(num) || num < 0) {
+              throw new Error(
+                'Monthly salary must be a valid non-negative number'
+              );
+            }
+          },
+        },
+      },
+
+      paymentMethod: {
+        type: DataTypes.ENUM(...DRIVER_PAYMENT_METHODS),
+        allowNull: true,
+        field: 'payment_method',
+      },
+
+      bankName: {
+        type: DataTypes.STRING(150),
+        allowNull: true,
+        field: 'bank_name',
+      },
+
+      bankAccountNumber: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        field: 'bank_account_number',
+      },
+
+      walletName: {
+        type: DataTypes.STRING(150),
+        allowNull: true,
+        field: 'wallet_name',
+      },
+
+      walletNumber: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        field: 'wallet_number',
+      },
+
       notes: {
         type: DataTypes.TEXT,
         allowNull: true,
@@ -220,15 +268,82 @@ module.exports = (sequelize, DataTypes) => {
       tableName: 'drivers',
       timestamps: true,
       underscored: true,
-
       paranoid: true,
       deletedAt: 'deleted_at',
+
+      validate: {
+        paymentMethodRequiredWhenDetailsExist() {
+          const hasBankData = !!(this.bankName || this.bankAccountNumber);
+          const hasWalletData = !!(this.walletName || this.walletNumber);
+
+          if ((hasBankData || hasWalletData) && !this.paymentMethod) {
+            throw new Error(
+              'Payment method is required when bank/wallet data is provided'
+            );
+          }
+        },
+
+        bankDataRequiredWhenMethodIsBank() {
+          if (this.paymentMethod !== 'bank') return;
+
+          if (!this.bankName || !String(this.bankName).trim()) {
+            throw new Error(
+              'Bank name is required when payment method is bank'
+            );
+          }
+
+          if (
+            !this.bankAccountNumber ||
+            !String(this.bankAccountNumber).trim()
+          ) {
+            throw new Error(
+              'Bank account number is required when payment method is bank'
+            );
+          }
+        },
+
+        walletDataRequiredWhenMethodIsWallet() {
+          if (this.paymentMethod !== 'wallet') return;
+
+          if (!this.walletName || !String(this.walletName).trim()) {
+            throw new Error(
+              'Wallet name is required when payment method is wallet'
+            );
+          }
+
+          if (!this.walletNumber || !String(this.walletNumber).trim()) {
+            throw new Error(
+              'Wallet number is required when payment method is wallet'
+            );
+          }
+        },
+
+        preventMixedPaymentData() {
+          if (
+            this.paymentMethod === 'bank' &&
+            (this.walletName || this.walletNumber)
+          ) {
+            throw new Error(
+              'Wallet fields must be empty when payment method is bank'
+            );
+          }
+
+          if (
+            this.paymentMethod === 'wallet' &&
+            (this.bankName || this.bankAccountNumber)
+          ) {
+            throw new Error(
+              'Bank fields must be empty when payment method is wallet'
+            );
+          }
+        },
+      },
     }
   );
 
-  // optional helpers
   Driver.CONTRACT_STATUSES = DRIVER_CONTRACT_STATUSES;
   Driver.SIGNED_WITH_HR_STATUSES = SIGNED_WITH_HR_STATUSES;
+  Driver.PAYMENT_METHODS = DRIVER_PAYMENT_METHODS;
 
   return Driver;
 };

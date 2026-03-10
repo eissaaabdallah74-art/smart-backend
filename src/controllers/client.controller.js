@@ -1,5 +1,10 @@
+// src/controllers/client.controller.js
 const { Op } = require('sequelize');
-const { Client, sequelize } = require('../models');
+const { Client, Auth, sequelize } = require('../models');
+const {
+  canSeeAllClients,
+  applyClientScopeWhere,
+} = require('../middlewares/client-scope.helpers');
 
 // helper بسيط لعمل default لقيم الشركة و النوع
 function normalizeCompany(company) {
@@ -13,6 +18,13 @@ function normalizeClientType(clientType) {
   return 'Class A'; // الديفولت
 }
 
+// sanitize: لو value مش رقم صالح → null
+function normalizeAccountManagerId(val) {
+  if (val === null || typeof val === 'undefined' || val === '') return null;
+  const n = Number(val);
+  return Number.isNaN(n) ? null : n;
+}
+
 // GET /api/clients
 // اختياري q للبحث العام: ?q=aramex
 exports.getAllClients = async (req, res) => {
@@ -20,15 +32,21 @@ exports.getAllClients = async (req, res) => {
     const { q } = req.query;
     const where = {};
 
+    // ✅ apply scoping
+    applyClientScopeWhere(where, req.user);
+
     if (q) {
       const like = { [Op.like]: `%${q}%` };
+
+      // ملاحظة: where فيه account_manager_id already
+      // هنضيف OR تحت AND تلقائياً (Sequelize بيعملها كويس)
       where[Op.or] = [
         { name: like },
         { crm: like },
         { pointOfContact: like },
         { contactEmail: like },
-        { accountManager: like },
-        // إضافة الحقول الجديدة للبحث
+        { accountManager: like }, // legacy
+        // البحث بالحقول الجديدة
         { clientType: like },
         { company: like },
       ];
@@ -37,6 +55,14 @@ exports.getAllClients = async (req, res) => {
     const clients = await Client.findAll({
       where,
       order: [['id', 'ASC']],
+      include: [
+        {
+          model: Auth,
+          as: 'accountManagerUser',
+          attributes: ['id', 'fullName', 'email', 'role', 'position'],
+          required: false,
+        },
+      ],
     });
 
     return res.json(clients);
@@ -54,8 +80,23 @@ exports.getClientById = async (req, res) => {
       return res.status(400).json({ message: 'Invalid id parameter' });
     }
 
-    const client = await Client.findByPk(id);
+    const where = { id };
+    applyClientScopeWhere(where, req.user);
+
+    const client = await Client.findOne({
+      where,
+      include: [
+        {
+          model: Auth,
+          as: 'accountManagerUser',
+          attributes: ['id', 'fullName', 'email', 'role', 'position'],
+          required: false,
+        },
+      ],
+    });
+
     if (!client) {
+      // نخليها 404 عشان ما نكشفش وجود عميل مش بتاعه
       return res.status(404).json({ message: 'Client not found' });
     }
 
@@ -67,7 +108,7 @@ exports.getClientById = async (req, res) => {
 };
 
 // POST /api/clients
-// body: { name, crm, phoneNumber, pointOfContact, contactEmail, accountManager, contractDate, contractTerminationDate, isActive, company, clientType }
+// body: { name, crm, phoneNumber, pointOfContact, contactEmail, accountManager, accountManagerId?, contractDate, contractTerminationDate, isActive, company, clientType }
 exports.createClient = async (req, res) => {
   try {
     const {
@@ -76,8 +117,10 @@ exports.createClient = async (req, res) => {
       phoneNumber,
       pointOfContact,
       contactEmail,
-      accountManager,
-      // الحقول الجديدة
+
+      accountManager, // legacy (optional)
+      accountManagerId, // ✅ NEW (optional)
+
       contractDate,
       contractTerminationDate,
       isActive,
@@ -89,14 +132,32 @@ exports.createClient = async (req, res) => {
       return res.status(400).json({ message: 'Client name is required' });
     }
 
+    const user = req.user;
+
+    // ✅ decide owner
+    let finalAccountManagerId = null;
+
+    if (canSeeAllClients(user)) {
+      // admin/crm/manager can assign
+      finalAccountManagerId = normalizeAccountManagerId(accountManagerId);
+
+      // لو ما بعتش accountManagerId → سيبه null
+      // أو لو عايز ديفولت لنفسه: finalAccountManagerId ??= user.id;
+    } else {
+      // any other user: forced to himself
+      finalAccountManagerId = user.id;
+    }
+
     const newClient = await Client.create({
       name,
       crm,
       phoneNumber,
       pointOfContact,
       contactEmail,
-      accountManager,
-      // الحقول الجديدة
+
+      accountManager: accountManager || null, // legacy
+      accountManagerId: finalAccountManagerId, // ✅
+
       contractDate,
       contractTerminationDate,
       isActive: typeof isActive === 'boolean' ? isActive : true,
@@ -128,10 +189,15 @@ exports.updateClient = async (req, res) => {
       return res.status(400).json({ message: 'Invalid id parameter' });
     }
 
-    const client = await Client.findByPk(id);
+    const where = { id };
+    applyClientScopeWhere(where, req.user);
+
+    const client = await Client.findOne({ where });
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }
+
+    const user = req.user;
 
     const {
       name,
@@ -139,8 +205,10 @@ exports.updateClient = async (req, res) => {
       phoneNumber,
       pointOfContact,
       contactEmail,
-      accountManager,
-      // الحقول الجديدة
+
+      accountManager, // legacy
+      accountManagerId, // ✅ NEW
+
       contractDate,
       contractTerminationDate,
       isActive,
@@ -154,9 +222,17 @@ exports.updateClient = async (req, res) => {
     if (typeof pointOfContact !== 'undefined')
       client.pointOfContact = pointOfContact;
     if (typeof contactEmail !== 'undefined') client.contactEmail = contactEmail;
-    if (typeof accountManager !== 'undefined')
-      client.accountManager = accountManager;
-    // تحديث الحقول الجديدة
+
+    // legacy
+    if (typeof accountManager !== 'undefined') client.accountManager = accountManager;
+
+    // ✅ accountManagerId update policy:
+    // - admin/crm/manager يقدر يغير owner
+    // - غير كده ممنوع يغيره (يتجاهل input)
+    if (typeof accountManagerId !== 'undefined' && canSeeAllClients(user)) {
+      client.accountManagerId = normalizeAccountManagerId(accountManagerId);
+    }
+
     if (typeof contractDate !== 'undefined') client.contractDate = contractDate;
     if (typeof contractTerminationDate !== 'undefined')
       client.contractTerminationDate = contractTerminationDate;
@@ -191,7 +267,10 @@ exports.deleteClient = async (req, res) => {
       return res.status(400).json({ message: 'Invalid id parameter' });
     }
 
-    const client = await Client.findByPk(id);
+    const where = { id };
+    applyClientScopeWhere(where, req.user);
+
+    const client = await Client.findOne({ where });
     if (!client) {
       return res.status(404).json({ message: 'Client not found' });
     }
@@ -206,7 +285,7 @@ exports.deleteClient = async (req, res) => {
 };
 
 // POST /api/clients/bulk-import
-// body: Array of { id?, name, crm, phoneNumber, pointOfContact, contactEmail, accountManager, contractDate, contractTerminationDate, isActive, company, clientType }
+// body: Array of { id?, name, crm, phoneNumber, pointOfContact, contactEmail, accountManager, accountManagerId?, contractDate, contractTerminationDate, isActive, company, clientType }
 exports.bulkImportClients = async (req, res) => {
   try {
     const body = req.body;
@@ -222,6 +301,7 @@ exports.bulkImportClients = async (req, res) => {
         .json({ message: 'Invalid payload, expected array of clients.' });
     }
 
+    const user = req.user;
     const t = await sequelize.transaction();
 
     try {
@@ -239,8 +319,10 @@ exports.bulkImportClients = async (req, res) => {
           phoneNumber,
           pointOfContact,
           contactEmail,
-          accountManager,
-          // الحقول الجديدة
+
+          accountManager, // legacy
+          accountManagerId, // ✅
+
           contractDate,
           contractTerminationDate,
           isActive,
@@ -253,9 +335,20 @@ exports.bulkImportClients = async (req, res) => {
           continue;
         }
 
+        // ✅ decide owner per row
+        let rowAccountManagerId = null;
+        if (canSeeAllClients(user)) {
+          rowAccountManagerId = normalizeAccountManagerId(accountManagerId);
+        } else {
+          rowAccountManagerId = user.id;
+        }
+
         let client = null;
         if (id) {
-          client = await Client.findByPk(Number(id), { transaction: t });
+          const findWhere = { id: Number(id) };
+          applyClientScopeWhere(findWhere, user);
+
+          client = await Client.findOne({ where: findWhere, transaction: t });
         }
 
         if (client) {
@@ -267,9 +360,15 @@ exports.bulkImportClients = async (req, res) => {
             client.pointOfContact = pointOfContact;
           if (typeof contactEmail !== 'undefined')
             client.contactEmail = contactEmail;
+
           if (typeof accountManager !== 'undefined')
             client.accountManager = accountManager;
-          // تحديث الحقول الجديدة
+
+          // ✅ owner update only for admin/crm/manager
+          if (canSeeAllClients(user)) {
+            client.accountManagerId = rowAccountManagerId;
+          }
+
           if (typeof contractDate !== 'undefined')
             client.contractDate = contractDate;
           if (typeof contractTerminationDate !== 'undefined')
@@ -283,6 +382,7 @@ exports.bulkImportClients = async (req, res) => {
           await client.save({ transaction: t });
           updated.push(client.id);
         } else {
+          // ✅ non-admin users can only create clients for themselves
           const createdClient = await Client.create(
             {
               name,
@@ -290,8 +390,10 @@ exports.bulkImportClients = async (req, res) => {
               phoneNumber,
               pointOfContact,
               contactEmail,
-              accountManager,
-              // الحقول الجديدة
+
+              accountManager: accountManager || null,
+              accountManagerId: rowAccountManagerId,
+
               contractDate,
               contractTerminationDate,
               isActive: typeof isActive === 'boolean' ? isActive : true,

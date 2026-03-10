@@ -1,5 +1,5 @@
 // src/services/driver-sync.service.js
-const { Interview, Driver, Client, Hub, Zone, Auth } = require('../models');
+const { Interview, Driver, Client, Hub, Zone, Auth, Vendor } = require('../models');
 const {
   DRIVER_CONTRACT_STATUSES,
   SIGNED_WITH_HR_STATUSES,
@@ -9,6 +9,8 @@ const INTERVIEW_INCLUDES = [
   { model: Client, as: 'client', attributes: ['id', 'name'] },
   { model: Hub, as: 'hub', attributes: ['id', 'name'] },
   { model: Zone, as: 'zone', attributes: ['id', 'name'] },
+  // ✅ optional include (مش شرط للـ sync بس مفيد لو بتعرض البيانات)
+  { model: Vendor, as: 'vendor', attributes: ['id', 'name', 'code'] },
   { model: Auth, as: 'accountManager', attributes: ['id', 'fullName'] },
   { model: Auth, as: 'interviewer', attributes: ['id', 'fullName'] },
 ];
@@ -71,22 +73,18 @@ function normalizeSignedWithHr(v) {
 }
 
 function deriveSignedWithHr(interview) {
-  // priority: explicit signedWithHr field
   const normalized = normalizeSignedWithHr(interview.signedWithHr);
   if (normalized) return normalized;
 
-  // fallback: hrFeedback contains "signed"
   if (isHrSigned(interview)) return 'Signed A Contract With HR';
 
   return null;
 }
 
 function deriveDriverContractStatus(interview) {
-  // prefer interview.courierStatus (source)
   const normalized = normalizeDriverContractStatus(interview.courierStatus);
   if (normalized) return normalized;
 
-  // fallback: if driver sends something else, return null
   return null;
 }
 
@@ -108,9 +106,19 @@ async function upsertDriverFromInterviewId(interviewId, { transaction, audit } =
   const phone = normPhone(interview.phoneNumber);
   if (!phone) return null;
 
+  // ✅ NEW: vendor is mandatory
+  const vendorId = Number(interview.vendorId);
+  if (!vendorId || Number.isNaN(vendorId)) {
+    const err = new Error('Interview.vendorId is required to sync Driver');
+    err.statusCode = 400;
+    throw err;
+  }
+
   const signedWithHr = deriveSignedWithHr(interview);
 
   const payload = {
+    vendorId, // ✅ NEW
+
     name: interview.courierName || '—',
     courierPhone: phone,
 
@@ -122,10 +130,8 @@ async function upsertDriverFromInterviewId(interviewId, { transaction, audit } =
 
     vehicleType: interview.vehicleType ?? null,
 
-    // keep existing behavior too (if someone depends on it)
     hiringStatus: deriveHiringStatus(interview),
 
-    // ✅ NEW write targets
     contractStatus: deriveDriverContractStatus(interview),
     signedWithHr,
 

@@ -1,9 +1,7 @@
-// src/controllers/driver.controller.js
-const { Driver, AuditLog, sequelize } = require('../models');
-
+const { Driver, DriverLoan, Vendor, AuditLog, sequelize } = require('../models');
 const { backfillDriversFromInterviews } = require('../services/driver-sync.service');
 
-const updatableFields = [
+const driverWritableFields = [
   'name',
   'fullNameArabic',
   'email',
@@ -28,19 +26,49 @@ const updatableFields = [
   'idExpiryDate',
   'liabilityAmount',
   'signed',
+  'signedWithHr',
   'contractStatus',
   'hiringStatus',
   'securityQueryStatus',
   'securityQueryComment',
   'exceptionBy',
+  'vendorId',
+  'monthlySalary',
+  'paymentMethod',
+  'bankName',
+  'bankAccountNumber',
+  'walletName',
+  'walletNumber',
   'notes',
-  'signedWithHr',
 ];
+
+function buildDriverPayload(body = {}) {
+  const payload = {};
+
+  for (const field of driverWritableFields) {
+    if (Object.prototype.hasOwnProperty.call(body, field)) {
+      payload[field] = body[field];
+    }
+  }
+
+  return payload;
+}
 
 // GET /api/drivers
 exports.getAllDrivers = async (req, res) => {
   try {
-    const drivers = await Driver.findAll({ order: [['id', 'ASC']] });
+    const drivers = await Driver.findAll({
+      include: [
+        {
+          model: Vendor,
+          as: 'vendor',
+          attributes: ['id', 'name'],
+          required: false,
+        },
+      ],
+      order: [['id', 'ASC']],
+    });
+
     return res.json(drivers);
   } catch (error) {
     console.error('getAllDrivers error:', error);
@@ -54,9 +82,12 @@ exports.syncDriversFromInterviews = async (req, res) => {
   try {
     const audit = req.audit;
 
-    const result = await backfillDriversFromInterviews({ transaction: t, audit });
-    await t.commit();
+    const result = await backfillDriversFromInterviews({
+      transaction: t,
+      audit,
+    });
 
+    await t.commit();
     return res.json({ success: true, ...result });
   } catch (error) {
     if (t && !t.finished) {
@@ -77,7 +108,9 @@ exports.syncDriversFromInterviews = async (req, res) => {
 exports.bulkUpsertDrivers = async (req, res) => {
   const rows = Array.isArray(req.body) ? req.body : [];
   if (!rows.length) {
-    return res.status(400).json({ message: 'Request body must be a non-empty array.' });
+    return res
+      .status(400)
+      .json({ message: 'Request body must be a non-empty array.' });
   }
 
   const audit = req.audit;
@@ -91,7 +124,7 @@ exports.bulkUpsertDrivers = async (req, res) => {
         if (!Number.isNaN(idNum)) obj.id = idNum;
       }
 
-      for (const field of updatableFields) {
+      for (const field of driverWritableFields) {
         if (Object.prototype.hasOwnProperty.call(row, field)) {
           obj[field] = row[field];
         }
@@ -102,21 +135,23 @@ exports.bulkUpsertDrivers = async (req, res) => {
     .filter((row) => row.name && String(row.name).trim().length);
 
   if (!payload.length) {
-    return res.status(400).json({ message: 'No valid driver rows to import (missing name).' });
+    return res
+      .status(400)
+      .json({ message: 'No valid driver rows to import (missing name).' });
   }
 
   const t = await sequelize.transaction();
+
   try {
-    const individual = String(process.env.AUDIT_BULK_INDIVIDUAL || '').toLowerCase() === 'true';
+    const individual =
+      String(process.env.AUDIT_BULK_INDIVIDUAL || '').toLowerCase() === 'true';
 
     if (!individual) {
-      // Fast mode (summary log only)
       await Driver.bulkCreate(payload, {
-        updateOnDuplicate: updatableFields,
+        updateOnDuplicate: driverWritableFields,
         transaction: t,
       });
 
-      // Summary audit row (entityId = 0)
       if (AuditLog && audit) {
         await AuditLog.create(
           {
@@ -136,7 +171,6 @@ exports.bulkUpsertDrivers = async (req, res) => {
         );
       }
     } else {
-      // Tracked mode (slower): per-row create/update with hooks + audit
       let created = 0;
       let updated = 0;
 
@@ -156,17 +190,17 @@ exports.bulkUpsertDrivers = async (req, res) => {
           await Driver.create(row, { transaction: t, audit });
           created += 1;
         } else {
-          for (const f of updatableFields) {
+          for (const f of driverWritableFields) {
             if (Object.prototype.hasOwnProperty.call(row, f)) {
               existing[f] = row[f];
             }
           }
+
           await existing.save({ transaction: t, audit });
           updated += 1;
         }
       }
 
-      // Optional: summary too
       if (AuditLog && audit) {
         await AuditLog.create(
           {
@@ -202,6 +236,14 @@ exports.bulkUpsertDrivers = async (req, res) => {
     }
 
     console.error('bulkUpsertDrivers error:', error);
+
+    if (error.name === 'SequelizeValidationError') {
+      const first = error.errors && error.errors[0];
+      return res.status(400).json({
+        message: first?.message || 'Validation error',
+      });
+    }
+
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
@@ -210,10 +252,30 @@ exports.bulkUpsertDrivers = async (req, res) => {
 exports.getDriverById = async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id parameter' });
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid id parameter' });
+    }
 
-    const driver = await Driver.findByPk(id);
-    if (!driver) return res.status(404).json({ message: 'Driver not found' });
+    const driver = await Driver.findByPk(id, {
+      include: [
+        {
+          model: Vendor,
+          as: 'vendor',
+          attributes: ['id', 'name'],
+          required: false,
+        },
+        {
+          model: DriverLoan,
+          as: 'loans',
+          separate: true,
+          order: [['id', 'DESC']],
+        },
+      ],
+    });
+
+    if (!driver) {
+      return res.status(404).json({ message: 'Driver not found' });
+    }
 
     return res.json(driver);
   } catch (error) {
@@ -226,18 +288,26 @@ exports.getDriverById = async (req, res) => {
 exports.createDriver = async (req, res) => {
   try {
     const audit = req.audit;
+    const payload = buildDriverPayload(req.body || {});
 
-    const body = req.body || {};
-    if (!body.name) return res.status(400).json({ message: 'Driver name is required' });
+    if (!payload.name) {
+      return res.status(400).json({ message: 'Driver name is required' });
+    }
 
-    const driver = await Driver.create(body, { audit });
+    if (!payload.vendorId) {
+      return res.status(400).json({ message: 'vendorId is required' });
+    }
+
+    const driver = await Driver.create(payload, { audit });
     return res.status(201).json(driver);
   } catch (error) {
     console.error('createDriver error:', error);
 
     if (error.name === 'SequelizeValidationError') {
       const first = error.errors && error.errors[0];
-      return res.status(400).json({ message: first?.message || 'Validation error' });
+      return res.status(400).json({
+        message: first?.message || 'Validation error',
+      });
     }
 
     return res.status(500).json({ message: 'Internal server error' });
@@ -248,17 +318,20 @@ exports.createDriver = async (req, res) => {
 exports.updateDriver = async (req, res) => {
   try {
     const audit = req.audit;
-
     const id = Number(req.params.id);
-    if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id parameter' });
+
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid id parameter' });
+    }
 
     const driver = await Driver.findByPk(id);
-    if (!driver) return res.status(404).json({ message: 'Driver not found' });
+    if (!driver) {
+      return res.status(404).json({ message: 'Driver not found' });
+    }
 
-    for (const field of updatableFields) {
-      if (Object.prototype.hasOwnProperty.call(req.body, field)) {
-        driver[field] = req.body[field];
-      }
+    const payload = buildDriverPayload(req.body || {});
+    for (const key of Object.keys(payload)) {
+      driver[key] = payload[key];
     }
 
     await driver.save({ audit });
@@ -268,7 +341,9 @@ exports.updateDriver = async (req, res) => {
 
     if (error.name === 'SequelizeValidationError') {
       const first = error.errors && error.errors[0];
-      return res.status(400).json({ message: first?.message || 'Validation error' });
+      return res.status(400).json({
+        message: first?.message || 'Validation error',
+      });
     }
 
     return res.status(500).json({ message: 'Internal server error' });
@@ -279,12 +354,16 @@ exports.updateDriver = async (req, res) => {
 exports.deleteDriver = async (req, res) => {
   try {
     const audit = req.audit;
-
     const id = Number(req.params.id);
-    if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id parameter' });
+
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid id parameter' });
+    }
 
     const driver = await Driver.findByPk(id);
-    if (!driver) return res.status(404).json({ message: 'Driver not found' });
+    if (!driver) {
+      return res.status(404).json({ message: 'Driver not found' });
+    }
 
     await driver.destroy({ audit });
     return res.json({ message: 'Driver deleted successfully' });

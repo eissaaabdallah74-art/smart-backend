@@ -6,6 +6,27 @@ function normalizeName(s) {
   return String(s || '').trim().replace(/\s+/g, ' ');
 }
 
+function normalizeNullableText(s) {
+  const v = String(s || '').trim().replace(/\s+/g, ' ');
+  return v ? v : null;
+}
+
+function normalizeNullablePhone(s) {
+  const v = String(s || '').trim().replace(/\s+/g, '').replace(/-/g, '');
+  return v ? v : null;
+}
+
+function normalizeNullableEmail(s) {
+  const v = String(s || '').trim().toLowerCase();
+  return v ? v : null;
+}
+
+function isValidEmail(email) {
+  // validation خفيف + عملي (Sequelize كمان هيعمل validate)
+  if (!email) return true;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
 function parsePositiveInt(v) {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -22,9 +43,7 @@ exports.getHubs = async (req, res) => {
     const whereClause = {};
     if (clientId) whereClause.clientId = clientId;
 
-    const include = [
-      { model: Client, as: 'client', attributes: ['id', 'name'] },
-    ];
+    const include = [{ model: Client, as: 'client', attributes: ['id', 'name'] }];
 
     if (includeZones) {
       include.push({
@@ -54,16 +73,25 @@ exports.getHubs = async (req, res) => {
 };
 
 // POST /api/hubs
-// body: { name, clientId }
+// body: { name, clientId, managerHubName, managerHubPhone, managerHubEmail }
 exports.createHub = async (req, res) => {
   const t = await Hub.sequelize.transaction();
   try {
     const name = normalizeName(req.body?.name);
     const clientId = parsePositiveInt(req.body?.clientId);
 
+    const managerHubName = normalizeNullableText(req.body?.managerHubName);
+    const managerHubPhone = normalizeNullablePhone(req.body?.managerHubPhone);
+    const managerHubEmail = normalizeNullableEmail(req.body?.managerHubEmail);
+
     if (!name || !clientId) {
       await t.rollback();
       return res.status(400).json({ message: 'name and clientId are required' });
+    }
+
+    if (!isValidEmail(managerHubEmail)) {
+      await t.rollback();
+      return res.status(400).json({ message: 'managerHubEmail is invalid' });
     }
 
     // ابحث case-insensitive (مهم لـ SQLite)
@@ -77,11 +105,22 @@ exports.createHub = async (req, res) => {
     });
 
     if (existing) {
+      // لو موجود: رجّعه زي ما هو (زي سلوكك الحالي)
       await t.commit();
       return res.status(200).json(existing);
     }
 
-    const hub = await Hub.create({ name, clientId }, { transaction: t });
+    const hub = await Hub.create(
+      {
+        name,
+        clientId,
+        managerHubName,
+        managerHubPhone,
+        managerHubEmail,
+      },
+      { transaction: t }
+    );
+
     await t.commit();
     return res.status(201).json(hub);
   } catch (error) {

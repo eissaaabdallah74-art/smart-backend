@@ -27,6 +27,7 @@ const attendanceRequestsRoutes = require("./src/routes/attendance-requests.route
 const auditLogsRoutes = require("./src/routes/audit-log.routes");
 const employeeLoansRoutes = require("./src/routes/employee-loans.routes");
 const companyDocumentsRoutes = require("./src/routes/company-documents.routes");
+const vendorRoutes = require("./src/routes/vendor.routes");
 
 const app = express();
 
@@ -68,8 +69,10 @@ app.use(
 app.use("/api/drivers", authMiddleware, auditContextMiddleware, driverRoutes);
 app.use("/api/tracking", authMiddleware, auditContextMiddleware, trackingRoutes);
 app.use("/api/interviews", authMiddleware, auditContextMiddleware, interviewRoutes);
+app.use("/api/vendors", authMiddleware, auditContextMiddleware, vendorRoutes);
 app.use("/api/hubs", authMiddleware, auditContextMiddleware, hubRoutes);
 app.use("/api/zones", authMiddleware, auditContextMiddleware, zoneRoutes);
+app.use('/api/driver-loans', authMiddleware, auditContextMiddleware, require('./src/routes/driver-loans.routes'));
 
 app.use(
   "/api/pending-requests",
