@@ -17,7 +17,8 @@ const BCRYPT_SALT_ROUNDS = 10;
 function buildAuthResponse(auth) {
   const isAdmin = auth.role === "admin";
 
-  const perms = {
+  // Base permissions from role
+  let perms = {
     isAdmin,
     canUseAiAssistant: true,
     canViewUsers: isAdmin || auth.role === "hr",
@@ -27,7 +28,32 @@ function buildAuthResponse(auth) {
       auth.role === "operation" ||
       auth.role === "supply_chain",
     canViewFinance: isAdmin || auth.role === "finance",
+    pages: {},
   };
+
+  // Merge custom permissions from DB if they exist
+  if (auth.permissions) {
+    let customPerms = auth.permissions;
+    if (typeof customPerms === "string") {
+      try {
+        customPerms = JSON.parse(customPerms);
+      } catch (e) {
+        customPerms = {};
+      }
+    }
+
+    // Merge pages and other high-level flags
+    if (customPerms.pages) {
+      perms.pages = { ...perms.pages, ...customPerms.pages };
+    }
+    
+    // Optionally override flags if they exist in customPerms
+    if (typeof customPerms.canViewFinance === "boolean") perms.canViewFinance = perms.canViewFinance || customPerms.canViewFinance;
+    if (typeof customPerms.canViewUsers === "boolean") perms.canViewUsers = perms.canViewUsers || customPerms.canViewUsers;
+  }
+
+  // Handle access expiration
+  perms.accessExpiresAt = auth.accessExpiresAt;
 
   const token = jwt.sign(
     {
@@ -106,6 +132,25 @@ async function setEmployeeLink({ authUserId, employeeId }, t) {
 
   return target;
 }
+
+// ================== Auth: Me ==================
+// GET /api/auth/me
+exports.getMe = async (req, res) => {
+  try {
+    const authId = req.user?.id;
+    if (!authId) return res.status(401).json({ message: "Unauthorized" });
+
+    const authUser = await Auth.findByPk(authId);
+    if (!authUser) return res.status(404).json({ message: "User not found" });
+
+    const payload = buildAuthResponse(authUser);
+    // Remove token from 'me' payload if preferred, or keep it.
+    return res.json(payload);
+  } catch (error) {
+    console.error("getMe error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
 
 // ================== Auth: Login ==================
 // POST /api/auth/login
@@ -247,6 +292,8 @@ exports.createUser = async (req, res) => {
       isActive,
       hireDate,
       employeeId, // NEW
+      managerId, // NEW hierarchy
+      interviewTarget, // NEW target
     } = req.body;
 
     if (!fullName || !email || !password) {
@@ -273,6 +320,8 @@ exports.createUser = async (req, res) => {
         role,
         position,
         isActive,
+        managerId: managerId || null,
+        interviewTarget: interviewTarget || 0,
         hireDate: hireDate || new Date(),
         creationDate: new Date(),
       },
@@ -338,6 +387,8 @@ exports.updateUser = async (req, res) => {
       hireDate,
       terminationDate,
       employeeId, // NEW
+      managerId,
+      interviewTarget,
     } = req.body;
 
     const authUser = await Auth.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
@@ -362,6 +413,8 @@ exports.updateUser = async (req, res) => {
     if (typeof position !== "undefined") authUser.position = position;
     if (typeof isActive !== "undefined") authUser.isActive = isActive;
     if (typeof hireDate !== "undefined") authUser.hireDate = hireDate;
+    if (typeof managerId !== "undefined") authUser.managerId = managerId || null;
+    if (typeof interviewTarget !== "undefined") authUser.interviewTarget = interviewTarget;
     if (typeof terminationDate !== "undefined")
       authUser.terminationDate = terminationDate;
 
@@ -537,6 +590,86 @@ exports.getAvailableEmployees = async (req, res) => {
     return res.json(out);
   } catch (error) {
     console.error("getAvailableEmployees error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// ================== NEW: Target Performance ==================
+exports.getUserPerformance = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
+
+    // Explicit recursive fetch up to 4 levels (Manager -> Subordinates)
+    const { Interview } = require('../models');
+
+    const getAuthAttributes = () => ['id', 'fullName', 'position', 'interviewTarget', 'role'];
+
+    const getManagedInterviewsInclude = () => ({
+      model: Interview,
+      as: 'managedInterviews',
+      where: { hr_feedback: 'signed' },
+      required: false,
+      attributes: ['id']
+    });
+
+    const buildLevel = (depth) => {
+      if (depth === 0) return null;
+      return {
+        attributes: getAuthAttributes(),
+        model: Auth,
+        as: 'subordinates',
+        required: false,
+        include: [
+           getManagedInterviewsInclude(),
+           buildLevel(depth - 1)
+        ].filter(Boolean)
+      };
+    };
+
+    const userTree = await Auth.findByPk(id, {
+      attributes: getAuthAttributes(),
+      include: [
+         getManagedInterviewsInclude(),
+         buildLevel(3) // 3 levels under the requested user is sufficient for 4-level hierarchy
+      ].filter(Boolean)
+    });
+
+    if (!userTree) return res.status(404).json({ message: "User not found" });
+
+    // Post-process tree into metrics
+    const calculateMetrics = (node) => {
+      let totalTarget = node.interviewTarget || 0;
+      let totalAchieved = node.managedInterviews ? node.managedInterviews.length : 0;
+      const downline = [];
+
+      if (node.subordinates && node.subordinates.length > 0) {
+        node.subordinates.forEach(sub => {
+          const subMetrics = calculateMetrics(sub);
+          totalTarget += subMetrics.totalTarget;
+          totalAchieved += subMetrics.totalAchieved;
+          downline.push(subMetrics);
+        });
+      }
+
+      return {
+        id: node.id,
+        fullName: node.fullName,
+        position: node.position,
+        role: node.role,
+        personalTarget: node.interviewTarget || 0,
+        personalAchieved: node.managedInterviews ? node.managedInterviews.length : 0,
+        totalTarget,
+        totalAchieved,
+        subordinates: downline
+      };
+    };
+
+    const metrics = calculateMetrics(userTree);
+    return res.json(metrics);
+
+  } catch (error) {
+    console.error("getUserPerformance error:", error);
     return res.status(500).json({ message: "Internal server error" });
   }
 };

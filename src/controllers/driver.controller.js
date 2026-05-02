@@ -1,4 +1,4 @@
-const { Driver, DriverLoan, Vendor, AuditLog, sequelize } = require('../models');
+const { Driver, DriverLoan, Vendor, AuditLog, PendingRequest, PendingRequestItem, Client, Hub, Zone, Payroll, sequelize } = require('../models');
 const { backfillDriversFromInterviews } = require('../services/driver-sync.service');
 
 const driverWritableFields = [
@@ -40,6 +40,8 @@ const driverWritableFields = [
   'walletName',
   'walletNumber',
   'notes',
+  'isBlacklisted',
+  'blacklistReason'
 ];
 
 function buildDriverPayload(body = {}) {
@@ -72,6 +74,64 @@ exports.getAllDrivers = async (req, res) => {
     return res.json(drivers);
   } catch (error) {
     console.error('getAllDrivers error:', error);
+    return res.status(500).json({ message: error.message || 'Internal server error' });
+  }
+};
+
+// GET /api/drivers/blacklist
+exports.getBlacklistedDrivers = async (req, res) => {
+  try {
+    const drivers = await Driver.findAll({
+      where: { isBlacklisted: true },
+      include: [
+        {
+          model: Vendor,
+          as: 'vendor',
+          attributes: ['id', 'name'],
+          required: false,
+        },
+      ],
+      order: [['id', 'DESC']],
+    });
+
+    return res.json(drivers);
+  } catch (error) {
+    console.error('getBlacklistedDrivers error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// POST /api/drivers/:id/blacklist
+exports.toggleBlacklist = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid id parameter' });
+    }
+
+    const driver = await Driver.findByPk(id);
+    if (!driver) {
+      return res.status(404).json({ message: 'Driver not found' });
+    }
+
+    const { isBlacklisted, reason } = req.body;
+    
+    // Toggle logic
+    const newValue = isBlacklisted !== undefined ? isBlacklisted : !driver.isBlacklisted;
+    
+    driver.isBlacklisted = newValue;
+    driver.blacklistReason = newValue ? reason || null : null;
+    driver.blacklistedAt = newValue ? new Date() : null;
+
+    if (newValue) {
+       driver.hiringStatus = 'Inactive';
+    }
+
+    await driver.save({ audit: req.audit });
+
+    return res.json(driver);
+  } catch (error) {
+    console.error('toggleBlacklist error:', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
@@ -270,6 +330,13 @@ exports.getDriverById = async (req, res) => {
           separate: true,
           order: [['id', 'DESC']],
         },
+        {
+          model: Payroll,
+          as: 'payrolls',
+          separate: true,
+          order: [['year', 'DESC'], ['month', 'DESC']],
+          limit: 1,
+        },
       ],
     });
 
@@ -316,27 +383,105 @@ exports.createDriver = async (req, res) => {
 
 // PUT /api/drivers/:id
 exports.updateDriver = async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     const audit = req.audit;
     const id = Number(req.params.id);
 
     if (Number.isNaN(id)) {
+      await t.rollback();
       return res.status(400).json({ message: 'Invalid id parameter' });
     }
 
-    const driver = await Driver.findByPk(id);
+    const driver = await Driver.findByPk(id, { transaction: t });
     if (!driver) {
+      await t.rollback();
       return res.status(404).json({ message: 'Driver not found' });
     }
 
+    const wasActive = (driver.hiringStatus || '').toLowerCase() !== 'inactive';
+
+    console.log('[DEBUG] Express req.body:', req.body);
     const payload = buildDriverPayload(req.body || {});
+    console.log('[DEBUG] updateDriver payload:', payload);
     for (const key of Object.keys(payload)) {
-      driver[key] = payload[key];
+      if (payload[key] !== undefined) {
+        driver[key] = payload[key];
+      }
     }
 
-    await driver.save({ audit });
+    if (payload.isBlacklisted !== undefined) {
+       if (payload.isBlacklisted && !driver.blacklistedAt) {
+          driver.blacklistedAt = new Date();
+       } else if (!payload.isBlacklisted) {
+          driver.blacklistedAt = null;
+          driver.blacklistReason = null;
+       }
+    }
+
+    if (driver.isBlacklisted && (driver.hiringStatus || '').toLowerCase() === 'active') {
+       await t.rollback();
+       return res.status(400).json({ message: 'لا يمكن تفعيل مندوب مسجل في القائمة السوداء. يرجى إزالته أولاً.' });
+    }
+
+    await driver.save({ audit, transaction: t });
+
+    const isNowInactive = (driver.hiringStatus || '').toLowerCase() === 'inactive';
+
+    if (req.body.createReplacementRequest === true && wasActive && isNowInactive) {
+      try {
+        let resolvedClientId = null;
+        let resolvedHubId = null;
+        let resolvedZoneId = null;
+
+        if (driver.clientName) {
+           const cl = await Client.findOne({ where: { name: driver.clientName }, transaction: t });
+           if (cl) resolvedClientId = cl.id;
+        }
+        if (driver.hub) {
+           const h = await Hub.findOne({ where: { name: driver.hub }, transaction: t });
+           if (h) resolvedHubId = h.id;
+        }
+        if (driver.area) {
+           const z = await Zone.findOne({ where: { name: driver.area }, transaction: t });
+           if (z) resolvedZoneId = z.id;
+        }
+
+        if (resolvedClientId) {
+          const replacementHeader = await PendingRequest.create({
+             clientId: resolvedClientId,
+             hubId: resolvedHubId || null,
+             zoneId: resolvedZoneId || null,
+             requestDate: new Date().toISOString().split('T')[0],
+             billingMonth: null,
+             status: 'APPROVED',
+             priority: 'high',
+             notes: `Auto-generated replacement request for ${driver.name || 'Courier'} due to InActive status.`,
+             createdBy: req.user?.id || req.body.updatedById || null,
+          }, { transaction: t });
+
+          await PendingRequestItem.create({
+             pendingRequestId: replacementHeader.id,
+             vehicleType: driver.vehicleType || 'Unknown',
+             vehicleCount: 1,
+             orderPrice: null,
+             guaranteeMinOrders: null,
+             fixedAmount: null,
+             allowanceAmount: null,
+             totalAmount: null,
+          }, { transaction: t });
+        }
+      } catch (replErr) {
+        console.error("Replacement Request error in Driver:", replErr);
+      }
+    }
+
+    await t.commit();
     return res.json(driver);
   } catch (error) {
+    if (t && !t.finished) {
+      try { await t.rollback(); } catch (_) {}
+    }
     console.error('updateDriver error:', error);
 
     if (error.name === 'SequelizeValidationError') {
@@ -369,6 +514,74 @@ exports.deleteDriver = async (req, res) => {
     return res.json({ message: 'Driver deleted successfully' });
   } catch (error) {
     console.error('deleteDriver error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// GET /api/drivers/blacklist/all
+exports.getBlacklistedDrivers = async (req, res) => {
+  try {
+    const drivers = await Driver.findAll({
+      where: {
+        isBlacklisted: true
+      },
+      include: [
+        {
+          model: Vendor,
+          as: 'vendor',
+          attributes: ['id', 'name'],
+        },
+      ],
+      order: [['blacklistedAt', 'DESC'], ['id', 'DESC']]
+    });
+
+    return res.json(drivers);
+  } catch (error) {
+    console.error('getBlacklistedDrivers error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// POST /api/drivers/:id/blacklist
+exports.toggleBlacklist = async (req, res) => {
+  try {
+    const audit = req.audit;
+    const id = Number(req.params.id);
+    const { isBlacklisted, reason } = req.body;
+
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid id parameter' });
+    }
+
+    const driver = await Driver.findByPk(id);
+    if (!driver) {
+      return res.status(404).json({ message: 'Driver not found' });
+    }
+
+    if (isBlacklisted && driver.hiringStatus === 'Active') {
+       await driver.update({
+         isBlacklisted: true,
+         blacklistReason: reason || null,
+         blacklistedAt: new Date(),
+         hiringStatus: 'Inactive'
+       }, { audit });
+    } else if (isBlacklisted) {
+       await driver.update({
+         isBlacklisted: true,
+         blacklistReason: reason || null,
+         blacklistedAt: new Date()
+       }, { audit });
+    } else {
+       await driver.update({
+         isBlacklisted: false,
+         blacklistReason: null,
+         blacklistedAt: null
+       }, { audit });
+    }
+
+    return res.json(driver);
+  } catch (error) {
+    console.error('toggleBlacklist error:', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };

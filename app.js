@@ -28,7 +28,17 @@ const auditLogsRoutes = require("./src/routes/audit-log.routes");
 const employeeLoansRoutes = require("./src/routes/employee-loans.routes");
 const companyDocumentsRoutes = require("./src/routes/company-documents.routes");
 const vendorRoutes = require("./src/routes/vendor.routes");
-
+const financeCategoryRoutes = require("./src/routes/finance-category.routes");
+const financeTransactionRoutes = require("./src/routes/finance-transaction.routes");
+const payrollRoutes = require("./src/routes/payroll.routes");
+const chatbotRoutes = require("./src/routes/chatbot.routes.js");
+const courierRegistrationRoutes = require("./src/routes/courier-registration.routes");
+const adminManagementRoutes = require("./src/routes/admin-management.routes");
+const publicHolidayRoutes = require("./src/routes/public-holiday.routes");
+const vehicleTypeRoutes = require("./src/routes/vehicle-type.routes");
+const businessModuleRoutes = require("./src/routes/business-module.routes");
+const kpiRoutes = require("./src/routes/kpi.routes");
+const zktecoRoutes = require("./src/routes/zkteco.routes");
 const app = express();
 
 console.log("✅ APP BOOT PID:", process.pid);
@@ -56,9 +66,17 @@ app.get("/", (_req, res) => {
 });
 
 // ===== Public =====
+app.use("/api/kpi", kpiRoutes);
+app.use("/api/zkteco", zktecoRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/couriers", courierRegistrationRoutes);
+app.use("/api/driver-auth", require("./src/routes/driver-auth.routes"));
 
-// ===== Protected =====
+// ===== Protected (Driver Portal) =====
+const driverAuthMiddleware = require("./src/middlewares/driver-auth.middleware");
+app.use("/api/driver-portal", driverAuthMiddleware, require("./src/routes/driver-portal.routes"));
+
+// ===== Protected (Admin/Employee) =====
 app.use("/api/clients", authMiddleware, auditContextMiddleware, clientRoutes);
 app.use(
   "/api/client-contracts",
@@ -84,6 +102,7 @@ app.use("/api/calls", authMiddleware, auditContextMiddleware, callsRoutes);
 app.use("/api/tasks", authMiddleware, auditContextMiddleware, tasksRouter);
 app.use("/api/reports", authMiddleware, auditContextMiddleware, reportRoutes);
 app.use("/api/employees", authMiddleware, auditContextMiddleware, employeeRoutes);
+app.use("/api/kpi", authMiddleware, auditContextMiddleware, kpiRoutes);
 
 /**
  * ✅ IMPORTANT ORDER FIX
@@ -103,6 +122,13 @@ app.use(
   attendanceRoutes
 );
 
+app.use(
+  "/api/public-holidays",
+  authMiddleware,
+  auditContextMiddleware,
+  publicHolidayRoutes
+);
+
 app.use("/api/audit-logs", authMiddleware, auditContextMiddleware, auditLogsRoutes);
 
 // ✅ Employee Loans (Protected)
@@ -113,13 +139,41 @@ app.use(
   employeeLoansRoutes
 );
 
-// ✅ Company Documents (Protected)  <-- (لازم قبل 404 fallback)
 app.use(
   "/api/company-documents",
   authMiddleware,
   auditContextMiddleware,
   companyDocumentsRoutes
 );
+
+// ✅ Finance Module
+app.use("/api/finance/categories", authMiddleware, auditContextMiddleware, financeCategoryRoutes);
+app.use("/api/finance/transactions", authMiddleware, auditContextMiddleware, financeTransactionRoutes);
+app.use("/api/finance/payrolls", authMiddleware, auditContextMiddleware, payrollRoutes);
+app.use("/api/finance/breakdowns", authMiddleware, auditContextMiddleware, require("./src/routes/breakdown.routes"));
+app.use("/api/driver-financial-requests", require("./src/routes/driver-financial-request.routes"));
+app.use("/api/driver-notifications", authMiddleware, auditContextMiddleware, require("./src/routes/driver-notification.routes"));
+app.use("/api/chatbot", authMiddleware, auditContextMiddleware, chatbotRoutes);
+app.use("/api/admin-management", authMiddleware, auditContextMiddleware, adminManagementRoutes);
+app.use("/api/vehicle-types", authMiddleware, auditContextMiddleware, vehicleTypeRoutes);
+app.use("/api/business-modules", authMiddleware, auditContextMiddleware, businessModuleRoutes);
+app.use("/api/client-modules", authMiddleware, auditContextMiddleware, require("./src/routes/client-module.routes"));
+app.use("/api/system-aliases", require("./src/routes/system-alias.routes"));
+
+// ✅ WhatsApp Module
+app.use("/api/whatsapp", authMiddleware, auditContextMiddleware, require("./src/routes/whatsapp.routes"));
+app.use("/api/whatsapp-templates", authMiddleware, auditContextMiddleware, require("./src/routes/whatsapp-templates.routes"));
+
+// ✅ Landing Page Settings (Public GET, Protected PUT)
+const landingPageSettingsRoutes = require("./src/routes/landing-page-settings.routes");
+// We can use authMiddleware for PUT if needed, but the router itself can just be mounted here.
+// Let's mount it with authMiddleware for PUT inside the route or just mount the whole thing and let the frontend use auth token if needed, wait, GET needs to be public for driver-portal.
+// Actually, it's better to just mount it without global authMiddleware, and we can rely on frontend not showing the admin page unless logged in. Or we can split it. For now, public.
+app.use("/api/landing-page-settings", landingPageSettingsRoutes);
+
+// ✅ Serve Static Uploads
+const path = require("path");
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ===== 404 JSON fallback (لازم يكون آخر حاجة بعد كل routes) =====
 app.use((req, res) => {
@@ -150,8 +204,13 @@ app.use((err, req, res, _next) => {
     await db.sequelize.authenticate();
     console.log("✅ Database connection has been established successfully.");
 
-    await db.sequelize.sync();
+    await db.sequelize.sync({ alter: true });
     await require("./src/seed/company-documents.seed")();
+    await require("./src/seed/finance.seed")();
+    await require("./src/seed/vehicle-type.seed")();
+    await require("./src/seed/business-module.seed")();
+    await require("./src/seed/system-alias.seed")();
+    await require("./src/seed/kpi-elements.seed")();
 
     console.log("✅ Models synchronized with database.");
 
@@ -206,3 +265,4 @@ app.use((err, req, res, _next) => {
 })();
 
 module.exports = app;
+   

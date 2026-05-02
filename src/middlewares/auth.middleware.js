@@ -43,6 +43,16 @@ module.exports = async function authMiddleware(req, res, next) {
       });
     }
 
+    // ✅ Parse permissions if stored as string
+    let perms = authUser.permissions;
+    if (typeof perms === "string") {
+      try {
+        perms = JSON.parse(perms);
+      } catch (e) {
+        perms = {};
+      }
+    }
+
     // attach normalized user shape
     req.user = {
       id: authUser.id,
@@ -51,6 +61,7 @@ module.exports = async function authMiddleware(req, res, next) {
       role: authUser.role,
       position: authUser.position || null,
       isActive: !!authUser.isActive,
+      permissions: perms, // ✅ added permissions
 
       // ✅ the important part
       employeeId: employee ? employee.id : null,

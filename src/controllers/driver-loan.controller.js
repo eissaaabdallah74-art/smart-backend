@@ -1,8 +1,10 @@
-const { DriverLoan, Driver, Auth } = require('../models');
+const { DriverLoan, Driver, Auth, DriverNotification } = require('../models');
 
 const loanWritableFields = [
   'driverId',
   'amount',
+  'installmentsCount',
+  'paidAmount',
   'paymentMethod',
   'bankName',
   'bankAccountNumber',
@@ -208,6 +210,16 @@ exports.updateDriverLoan = async (req, res) => {
 
     const payload = buildLoanPayload(req.body || {});
 
+    // If loan is NOT pending, restrict updates to core fields
+    if (loan.status !== 'pending') {
+      const restrictedFields = ['driverId', 'amount', 'installmentsCount', 'paymentMethod', 'bankName', 'bankAccountNumber', 'walletName', 'walletNumber'];
+      for (const field of restrictedFields) {
+        if (payload[field] !== undefined) {
+          delete payload[field]; // discard updates to restricted fields
+        }
+      }
+    }
+
     if (payload.driverId) {
       const driver = await Driver.findByPk(payload.driverId);
       if (!driver) {
@@ -225,11 +237,29 @@ exports.updateDriverLoan = async (req, res) => {
       if (!payload.decidedById && req.user?.id) payload.decidedById = req.user.id;
     }
 
+    const oldStatus = loan.status;
+
     for (const key of Object.keys(payload)) {
       loan[key] = payload[key];
     }
 
     await loan.save({ audit });
+
+    // Automation: Alert driver of loan decision
+    try {
+        if (oldStatus !== loan.status && (loan.status === 'approved' || loan.status === 'rejected')) {
+             await DriverNotification.create({
+                 driverId: loan.driverId,
+                 title: loan.status === 'approved' ? 'قبول طلب السلفة (Loan Approved)' : 'رفض طلب السلفة (Loan Rejected)',
+                 message: loan.status === 'approved' ? `تم قبول طلب السلفة الخاص بك بقيمة ${loan.amount}.` : `تم رفض طلب السلفة الخاص بك. الرجاء مراجعة الإدارة لمزيد من التفاصيل.`,
+                 type: 'popup',
+                 isRead: false
+             });
+        }
+    } catch (autoErr) {
+        console.error('Driver loan automation error:', autoErr);
+    }
+
     return res.json(loan);
   } catch (error) {
     console.error('updateDriverLoan error:', error);
@@ -258,6 +288,10 @@ exports.deleteDriverLoan = async (req, res) => {
     const loan = await DriverLoan.findByPk(id);
     if (!loan) {
       return res.status(404).json({ message: 'Driver loan not found' });
+    }
+
+    if (loan.status !== 'pending') {
+      return res.status(403).json({ message: 'Cannot delete a loan that has already been processed.' });
     }
 
     await loan.destroy({ audit });

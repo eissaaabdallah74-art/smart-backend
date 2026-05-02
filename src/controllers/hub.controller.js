@@ -150,3 +150,43 @@ exports.createHub = async (req, res) => {
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
+
+// PUT /api/hubs/:id
+// body: { name, clientId, managerHubName, managerHubPhone, managerHubEmail }
+exports.updateHub = async (req, res) => {
+  try {
+    const id = parsePositiveInt(req.params.id);
+    if (!id) return res.status(400).json({ message: 'Invalid Hub ID' });
+
+    const hub = await Hub.findByPk(id);
+    if (!hub) return res.status(404).json({ message: 'Hub not found' });
+
+    const name = normalizeName(req.body?.name);
+    const clientId = parsePositiveInt(req.body?.clientId) || hub.clientId;
+
+    const managerHubName = typeof req.body?.managerHubName !== 'undefined' ? normalizeNullableText(req.body?.managerHubName) : hub.managerHubName;
+    const managerHubPhone = typeof req.body?.managerHubPhone !== 'undefined' ? normalizeNullablePhone(req.body?.managerHubPhone) : hub.managerHubPhone;
+    const managerHubEmail = typeof req.body?.managerHubEmail !== 'undefined' ? normalizeNullableEmail(req.body?.managerHubEmail) : hub.managerHubEmail;
+
+    if (name) {
+      hub.name = name;
+    }
+    hub.clientId = clientId;
+    hub.managerHubName = managerHubName;
+    hub.managerHubPhone = managerHubPhone;
+    hub.managerHubEmail = managerHubEmail;
+
+    if (managerHubEmail && !isValidEmail(managerHubEmail)) {
+      return res.status(400).json({ message: 'managerHubEmail is invalid' });
+    }
+
+    await hub.save();
+    return res.json(hub);
+  } catch (error) {
+    if (error?.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).json({ message: 'A Hub with the same name already exists for this client' });
+    }
+    console.error('updateHub error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};

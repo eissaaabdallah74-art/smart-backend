@@ -4,6 +4,7 @@ const {
   AttendanceRequest,
   AttendanceImport,
   Employee,
+  PublicHoliday,
   sequelize,
 } = require("../models");
 
@@ -417,47 +418,58 @@ exports.decideRequest = async (req, res) => {
 
     // ===== ✅ annual leave balance rule (only on approve) =====
     if (nextStatus === "approved" && row.type === "leave_day" && row.leaveType === "annual") {
-      // 1) Try to take annual total from employment (if exists) for consistency with EmployeeDetails UI
-      const totalFromEmployment = await getAnnualTotalFromEmployment(row.employeeId, t);
-
-      // 2) Get/Create leave balance with row lock
-      let bal = await EmployeeLeaveBalance.findByPk(row.employeeId, {
+      // ✅ Public Holiday Check
+      const isPublicHoliday = await PublicHoliday.findOne({
+        where: { date: row.date },
         transaction: t,
-        lock: t.LOCK.UPDATE,
+        lock: t.LOCK.SHARE
       });
 
-      if (!bal) {
-        const initTotal = Number.isFinite(Number(totalFromEmployment)) && Number(totalFromEmployment) > 0
-          ? Number(totalFromEmployment)
-          : 21.0;
+      if (isPublicHoliday) {
+         console.log(`[PublicHoliday Skip] Request ID ${id} is on ${row.date} (${isPublicHoliday.name}). Skipping balance deduction.`);
+      } else {
+        // 1) Try to take annual total from employment (if exists) for consistency with EmployeeDetails UI
+        const totalFromEmployment = await getAnnualTotalFromEmployment(row.employeeId, t);
 
-        bal = await EmployeeLeaveBalance.create(
-          { employeeId: row.employeeId, annualTotalDays: initTotal, annualUsedDays: 0.0 },
-          { transaction: t }
-        );
+        // 2) Get/Create leave balance with row lock
+        let bal = await EmployeeLeaveBalance.findByPk(row.employeeId, {
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+
+        if (!bal) {
+          const initTotal = Number.isFinite(Number(totalFromEmployment)) && Number(totalFromEmployment) > 0
+            ? Number(totalFromEmployment)
+            : 21.0;
+
+          bal = await EmployeeLeaveBalance.create(
+            { employeeId: row.employeeId, annualTotalDays: initTotal, annualUsedDays: 0.0 },
+            { transaction: t }
+          );
+        }
+
+        // 3) Keep totals aligned (prefer employment total if present)
+        const total =
+          Number.isFinite(Number(totalFromEmployment)) && Number(totalFromEmployment) > 0
+            ? Number(totalFromEmployment)
+            : Number(bal.annualTotalDays || 0);
+
+        const used = Number(bal.annualUsedDays || 0);
+        const remaining = Number(total) - Number(used);
+
+        if (remaining < 1) {
+          await t.rollback();
+          return res.status(400).json({ message: "Insufficient annual leave balance" });
+        }
+
+        // ✅ update leave-balance table
+        bal.annualTotalDays = total;
+        bal.annualUsedDays = used + 1;
+        await bal.save({ transaction: t });
+
+        // ✅ IMPORTANT: update employment fields so EmployeeDetails reflects the new balance
+        await syncEmploymentAnnual(row.employeeId, total, used + 1, t);
       }
-
-      // 3) Keep totals aligned (prefer employment total if present)
-      const total =
-        Number.isFinite(Number(totalFromEmployment)) && Number(totalFromEmployment) > 0
-          ? Number(totalFromEmployment)
-          : Number(bal.annualTotalDays || 0);
-
-      const used = Number(bal.annualUsedDays || 0);
-      const remaining = Number(total) - Number(used);
-
-      if (remaining < 1) {
-        await t.rollback();
-        return res.status(400).json({ message: "Insufficient annual leave balance" });
-      }
-
-      // ✅ update leave-balance table
-      bal.annualTotalDays = total;
-      bal.annualUsedDays = used + 1;
-      await bal.save({ transaction: t });
-
-      // ✅ IMPORTANT: update employment fields so EmployeeDetails reflects the new balance
-      await syncEmploymentAnnual(row.employeeId, total, used + 1, t);
     }
 
     row.status = nextStatus;

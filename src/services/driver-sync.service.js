@@ -6,10 +6,9 @@ const {
 } = require('../constants/enums');
 
 const INTERVIEW_INCLUDES = [
-  { model: Client, as: 'client', attributes: ['id', 'name'] },
+  { model: Client, as: 'client', attributes: ['id', 'name', 'pointOfContact'] },
   { model: Hub, as: 'hub', attributes: ['id', 'name'] },
   { model: Zone, as: 'zone', attributes: ['id', 'name'] },
-  // ✅ optional include (مش شرط للـ sync بس مفيد لو بتعرض البيانات)
   { model: Vendor, as: 'vendor', attributes: ['id', 'name', 'code'] },
   { model: Auth, as: 'accountManager', attributes: ['id', 'fullName'] },
   { model: Auth, as: 'interviewer', attributes: ['id', 'fullName'] },
@@ -117,20 +116,32 @@ async function upsertDriverFromInterviewId(interviewId, { transaction, audit } =
   const signedWithHr = deriveSignedWithHr(interview);
 
   const payload = {
-    vendorId, // ✅ NEW
+    vendorId,
 
     name: interview.courierName || '—',
     courierPhone: phone,
+    courierId: interview.courierId ?? null,
+    nationalId: interview.nationalId ?? null,
 
     residence: interview.residence ?? null,
 
     clientName: interview.client?.name ?? null,
+    pointOfContact: interview.client?.pointOfContact ?? null, // ✅ Map Point of Contact from Client
     hub: interview.hub?.name ?? null,
     area: interview.zone?.name ?? null,
 
+    contractor: interview.vendor?.name ?? null, // ✅ Map Vendor Name to Contractor
+    accountManager: interview.accountManager?.fullName ?? null, // ✅ Map names
+    interviewer: interview.interviewer?.fullName ?? null,
+    hrRepresentative: interview.interviewer?.fullName ?? null, // ✅ Default to interviewer
+
     vehicleType: interview.vehicleType ?? null,
+    vehiclePlateNumber: interview.vehiclePlateNumber ?? null,
+    module: interview.module ?? null,
 
     hiringStatus: deriveHiringStatus(interview),
+    securityQueryStatus: interview.securityResult ?? null, // ✅ Map Security
+    securityQueryComment: interview.notes ?? null,
 
     contractStatus: deriveDriverContractStatus(interview),
     signedWithHr,
@@ -146,6 +157,12 @@ async function upsertDriverFromInterviewId(interviewId, { transaction, audit } =
     typeof interview.get === 'function' ? interview.get('day1Date') : interview.day1Date;
   if (typeof day1Date !== 'undefined') {
     payload.day1Date = day1Date ?? null;
+  }
+
+  const hiringDate =
+    typeof interview.get === 'function' ? interview.get('hiringDate') : interview.hiringDate;
+  if (typeof hiringDate !== 'undefined') {
+    payload.hiringDate = hiringDate ?? null;
   }
 
   const existing = await Driver.findOne({

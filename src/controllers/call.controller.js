@@ -4,6 +4,7 @@ const { Call, Auth, Client } = require('../models');
 const {
   isOperationManagerOrSupervisor,
 } = require('../middlewares/role.helpers');
+const { formatLocalEgyptianPhone } = require('../utils/phone-normalizer');
 
 // ===== Helper: build where/filter =====
 function buildCallWhereQuery(query) {
@@ -334,7 +335,7 @@ exports.bulkImportCalls = async (req, res) => {
           created_by_id: user.id,
           date: dateVal,
           name: name || null,
-          phone: phone || null,
+          phone: phone ? formatLocalEgyptianPhone(phone) : null,
           vehicle_type: vehicle_type || null,
           government: government || null,
           call_feedback: call_feedback || null,

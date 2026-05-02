@@ -13,9 +13,9 @@ function normalizeCompany(company) {
   return company;
 }
 
-function normalizeClientType(clientType) {
-  if (clientType && String(clientType).trim() !== '') return clientType;
-  return 'Class A'; // الديفولت
+function normalizeCompanyCode(companyCode) {
+  if (companyCode && String(companyCode).trim() !== '') return companyCode;
+  return 'SMV'; // الديفولت
 }
 
 // sanitize: لو value مش رقم صالح → null
@@ -47,7 +47,7 @@ exports.getAllClients = async (req, res) => {
         { contactEmail: like },
         { accountManager: like }, // legacy
         // البحث بالحقول الجديدة
-        { clientType: like },
+        { companyCode: like },
         { company: like },
       ];
     }
@@ -108,7 +108,7 @@ exports.getClientById = async (req, res) => {
 };
 
 // POST /api/clients
-// body: { name, crm, phoneNumber, pointOfContact, contactEmail, accountManager, accountManagerId?, contractDate, contractTerminationDate, isActive, company, clientType }
+// body: { name, crm, phoneNumber, pointOfContact, contactEmail, accountManager, accountManagerId?, contractDate, contractTerminationDate, isActive, company, companyCode }
 exports.createClient = async (req, res) => {
   try {
     const {
@@ -125,7 +125,8 @@ exports.createClient = async (req, res) => {
       contractTerminationDate,
       isActive,
       company,
-      clientType,
+      companyCode,
+      color,
     } = req.body;
 
     if (!name) {
@@ -162,7 +163,8 @@ exports.createClient = async (req, res) => {
       contractTerminationDate,
       isActive: typeof isActive === 'boolean' ? isActive : true,
       company: normalizeCompany(company),
-      clientType: normalizeClientType(clientType),
+      companyCode: normalizeCompanyCode(companyCode),
+      color: color || '#4f46e5',
     });
 
     return res.status(201).json(newClient);
@@ -213,7 +215,8 @@ exports.updateClient = async (req, res) => {
       contractTerminationDate,
       isActive,
       company,
-      clientType,
+      companyCode,
+      color,
     } = req.body;
 
     if (typeof name !== 'undefined') client.name = name;
@@ -239,8 +242,10 @@ exports.updateClient = async (req, res) => {
     if (typeof isActive !== 'undefined') client.isActive = isActive;
     if (typeof company !== 'undefined')
       client.company = normalizeCompany(company);
-    if (typeof clientType !== 'undefined')
-      client.clientType = normalizeClientType(clientType);
+    if (typeof companyCode !== 'undefined')
+      client.companyCode = normalizeCompanyCode(companyCode);
+    if (typeof color !== 'undefined')
+      client.color = color;
 
     await client.save();
 
@@ -285,7 +290,7 @@ exports.deleteClient = async (req, res) => {
 };
 
 // POST /api/clients/bulk-import
-// body: Array of { id?, name, crm, phoneNumber, pointOfContact, contactEmail, accountManager, accountManagerId?, contractDate, contractTerminationDate, isActive, company, clientType }
+// body: Array of { id?, name, crm, phoneNumber, pointOfContact, contactEmail, accountManager, accountManagerId?, contractDate, contractTerminationDate, isActive, company, companyCode }
 exports.bulkImportClients = async (req, res) => {
   try {
     const body = req.body;
@@ -327,7 +332,8 @@ exports.bulkImportClients = async (req, res) => {
           contractTerminationDate,
           isActive,
           company,
-          clientType,
+          companyCode,
+          color,
         } = raw;
 
         if (!name || String(name).trim() === '') {
@@ -376,8 +382,10 @@ exports.bulkImportClients = async (req, res) => {
           if (typeof isActive !== 'undefined') client.isActive = isActive;
           if (typeof company !== 'undefined')
             client.company = normalizeCompany(company);
-          if (typeof clientType !== 'undefined')
-            client.clientType = normalizeClientType(clientType);
+          if (typeof companyCode !== 'undefined')
+            client.companyCode = normalizeCompanyCode(companyCode);
+          if (typeof color !== 'undefined')
+            client.color = color;
 
           await client.save({ transaction: t });
           updated.push(client.id);
@@ -398,7 +406,8 @@ exports.bulkImportClients = async (req, res) => {
               contractTerminationDate,
               isActive: typeof isActive === 'boolean' ? isActive : true,
               company: normalizeCompany(company),
-              clientType: normalizeClientType(clientType),
+              companyCode: normalizeCompanyCode(companyCode),
+              color: color || '#4f46e5',
             },
             { transaction: t }
           );

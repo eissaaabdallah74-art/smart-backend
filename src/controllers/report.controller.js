@@ -232,7 +232,7 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
         status: 'completed',
         [Op.or]: [
           { date: { [Op.between]: [from, to] } },
-          { date: null, createdAt: { [Op.between]: [from, to] } },
+          { createdAt: { [Op.between]: [from, to] } },
         ],
       },
       attributes: ['id', 'assignee_id', 'date', 'createdAt', 'phone'],
@@ -248,7 +248,7 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
         phoneNumber: { [Op.ne]: null },
         date: { [Op.between]: [interviewsFrom, interviewsTo] },
       },
-      attributes: ['id', 'phoneNumber', 'date', 'courierName'],
+      attributes: ['id', 'phoneNumber', 'date', 'courierName', 'hrFeedback', 'courierStatus'],
       raw: true,
     });
 
@@ -278,6 +278,8 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
         convertedCalls: 0,
         completedPhones: new Set(),
         convertedPhones: new Set(),
+        signedCalls: 0,
+        activeCalls: 0,
 
         // details
         detailsCompleted: [],
@@ -297,7 +299,10 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
       const phone = normalizePhone(c.phone);
       if (phone) bucket.completedPhones.add(phone);
 
-      const baseDate = c.date ? new Date(c.date) : new Date(c.createdAt);
+      const dTime = c.date ? new Date(c.date).getTime() : NaN;
+      const baseDate = !isNaN(dTime) ? new Date(c.date) : new Date(c.createdAt);
+
+      if (baseDate < from || baseDate > to) continue;
 
       // completed details
       if (
@@ -329,11 +334,25 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
         const maxDate = endOfDay(addDays(callDate, windowDays));
         const dates = interviewMap.get(phone);
 
-        const converted = dates.some((x) => x >= callDate && x <= maxDate);
-
-        if (converted) {
+        const matchedDates = dates.filter((x) => x >= callDate && x <= maxDate);
+        if (matchedDates.length > 0) {
           bucket.convertedCalls += 1;
           bucket.convertedPhones.add(phone);
+
+          const matches = interviews.filter((it) => normalizePhone(it.phoneNumber) === phone);
+          const matchedIt = matches.find((it) => {
+            const d = parseDateOnlyAsLocal(it.date) || new Date(it.date);
+            return d >= callDate && d <= maxDate;
+          });
+
+          const fb = matchedIt ? (matchedIt.hrFeedback || matchedIt.hr_feedback || '') : '';
+          const st = matchedIt ? (matchedIt.courierStatus || matchedIt.courier_status || '') : '';
+
+          const isSigned = String(fb).toLowerCase().includes('signed');
+          const isActive = String(st).toLowerCase() === 'active';
+
+          if (isSigned) bucket.signedCalls += 1;
+          if (isActive) bucket.activeCalls += 1;
 
           if (
             includeDetails &&
@@ -354,6 +373,10 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
                 callDate: toDateOnlyString(baseDate),
                 interviewDates: interviewMap.get(phone).map(toDateOnlyString),
                 source: 'call+interview',
+                hrFeedback: matchedIt ? (matchedIt.hrFeedback || matchedIt.hr_feedback || null) : null,
+                courierStatus: matchedIt ? (matchedIt.courierStatus || matchedIt.courier_status || null) : null,
+                isSigned: !!isSigned,
+                isActive: !!isActive,
               });
             }
           }
@@ -367,6 +390,8 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
     let totalsConverted = 0;
     let totalsPhonesCompleted = 0;
     let totalsPhonesConverted = 0;
+    let totalsSigned = 0;
+    let totalsActive = 0;
 
     for (const s of staff) {
       const b = agg.get(s.id);
@@ -382,6 +407,8 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
       totalsConverted += b.convertedCalls;
       totalsPhonesCompleted += uniquePhonesCompleted;
       totalsPhonesConverted += uniqueConvertedPhones;
+      totalsSigned += b.signedCalls;
+      totalsActive += b.activeCalls;
 
       const row = {
         assignee: {
@@ -393,6 +420,8 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
         },
         completedCalls: b.completedCalls,
         convertedCalls: b.convertedCalls,
+        signedCalls: b.signedCalls,
+        activeCalls: b.activeCalls,
         conversionRate,
         uniquePhonesCompleted,
         uniqueConvertedPhones,
@@ -417,6 +446,8 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
       totals: {
         completedCalls: totalsCompleted,
         convertedCalls: totalsConverted,
+        signedCalls: totalsSigned,
+        activeCalls: totalsActive,
         uniquePhonesCompleted: totalsPhonesCompleted,
         uniqueConvertedPhones: totalsPhonesConverted,
       },
@@ -444,45 +475,30 @@ exports.getOperationAchievementsReport = async (req, res) => {
     const from = fromRaw ? startOfDay(fromRaw) : startOfDay(addDays(now, -30));
     const to = toRaw ? endOfDay(toRaw) : endOfDay(now);
 
-    const canViewAll =
-      user.role === 'admin' || isOperationManagerOrSupervisor(user);
-
+    const canViewAll = user.role === 'admin' || isOperationManagerOrSupervisor(user);
     const includeInactive = canViewAll && req.query.includeInactive === '1';
 
-    const staffLoad = await loadOperationStaff({
-      user,
-      includeInactive,
-      assigneeId: req.query.assigneeId,
-    });
-    if (staffLoad.error) {
-      return res.status(staffLoad.error.status).json({ message: staffLoad.error.message });
-    }
+    const staffLoad = await loadOperationStaff({ user, includeInactive, assigneeId: req.query.assigneeId });
+    if (staffLoad.error) return res.status(staffLoad.error.status).json({ message: staffLoad.error.message });
     const staff = staffLoad.staff;
-
     const staffIds = staff.map((s) => s.id);
     if (!staffIds.length) {
-      return res.json({
-        range: { from: toDateOnlyString(from), to: toDateOnlyString(to) },
-        columns: [],
-        totals: {},
-        rows: [],
-      });
+      return res.json({ range: { from: toDateOnlyString(from), to: toDateOnlyString(to) }, requests: [] });
     }
 
-    // calls (any status) in range
     const calls = await Call.findAll({
       where: {
         assignee_id: { [Op.in]: staffIds },
+        status: 'completed',
         [Op.or]: [
           { date: { [Op.between]: [from, to] } },
-          { date: null, createdAt: { [Op.between]: [from, to] } },
+          { createdAt: { [Op.between]: [from, to] } },
         ],
       },
-      attributes: ['id', 'assignee_id', 'date', 'createdAt', 'phone', 'status'],
-      order: [['createdAt', 'ASC']],
+      attributes: ['id', 'assignee_id', 'date', 'createdAt', 'phone'],
+      raw: true,
     });
 
-    // interviews for converted matching
     const windowDays = 14;
     const interviewsFrom = toDateOnlyString(from);
     const interviewsTo = toDateOnlyString(addDays(to, windowDays));
@@ -491,8 +507,9 @@ exports.getOperationAchievementsReport = async (req, res) => {
       where: {
         phoneNumber: { [Op.ne]: null },
         date: { [Op.between]: [interviewsFrom, interviewsTo] },
+        inventoryPendingRequestItemId: { [Op.ne]: null },
       },
-      attributes: ['id', 'phoneNumber', 'date'],
+      attributes: ['id', 'phoneNumber', 'date', 'inventoryPendingRequestItemId'],
       raw: true,
     });
 
@@ -500,103 +517,130 @@ exports.getOperationAchievementsReport = async (req, res) => {
     for (const it of interviews) {
       const p = normalizePhone(it.phoneNumber);
       if (!p) continue;
-
-      const d = parseDateOnlyAsLocal(it.date) || new Date(it.date);
       if (!interviewMap.has(p)) interviewMap.set(p, []);
-      interviewMap.get(p).push(d);
+      interviewMap.get(p).push(it);
     }
 
-    const columns = [
-      { key: 'totalCalls', label: 'Total Calls' },
-      { key: 'completedCalls', label: 'Completed' },
-      { key: 'pendingCalls', label: 'Pending' },
-      { key: 'cancelledCalls', label: 'Cancelled' },
-      { key: 'rescheduledCalls', label: 'Rescheduled' },
-      { key: 'convertedCalls', label: 'Converted (to interview)' },
-      { key: 'uniquePhones', label: 'Unique Phones' },
-      { key: 'uniqueConvertedPhones', label: 'Unique Converted Phones' },
-    ];
-
-    const totals = {};
-    for (const c of columns) totals[c.key] = 0;
-
-    const agg = new Map();
-    for (const s of staff) {
-      agg.set(s.id, {
-        assignee: s,
-        metrics: {
-          totalCalls: 0,
-          completedCalls: 0,
-          pendingCalls: 0,
-          cancelledCalls: 0,
-          rescheduledCalls: 0,
-          convertedCalls: 0,
-          uniquePhones: 0,
-          uniqueConvertedPhones: 0,
-        },
-        phonesAll: new Set(),
-        phonesConverted: new Set(),
-      });
-    }
+    const matchedInterviewItemIds = new Set();
+    const assigneeBuckets = new Map();
+    for(const s of staff) assigneeBuckets.set(s.id, new Map());
 
     for (const c of calls) {
-      const bucket = agg.get(c.assignee_id);
-      if (!bucket) continue;
+      const p = normalizePhone(c.phone);
+      if (!p || !interviewMap.has(p)) continue;
+      
+      const dTime = c.date ? new Date(c.date).getTime() : NaN;
+      const baseDate = !isNaN(dTime) ? new Date(c.date) : new Date(c.createdAt);
+      if (baseDate < from || baseDate > to) continue;
+      const callDate = startOfDay(baseDate);
+      const maxDate = endOfDay(addDays(callDate, windowDays));
 
-      bucket.metrics.totalCalls += 1;
+      const datesIt = interviewMap.get(p);
+      const matched = datesIt.filter(it => {
+         const d = parseDateOnlyAsLocal(it.date) || new Date(it.date);
+         return d >= callDate && d <= maxDate;
+      });
 
-      const st = (c.status || '').toString();
-      if (st === 'completed') bucket.metrics.completedCalls += 1;
-      else if (st === 'pending') bucket.metrics.pendingCalls += 1;
-      else if (st === 'cancelled') bucket.metrics.cancelledCalls += 1;
-      else if (st === 'rescheduled') bucket.metrics.rescheduledCalls += 1;
-
-      const phone = normalizePhone(c.phone);
-      if (phone) bucket.phonesAll.add(phone);
-
-      // converted only for completed calls (FIXED: do NOT require c.date)
-      if (st === 'completed' && phone && interviewMap.has(phone)) {
-        const baseDate = c.date ? new Date(c.date) : new Date(c.createdAt);
-        const callDate = startOfDay(baseDate);
-        const maxDate = endOfDay(addDays(callDate, windowDays));
-        const dates = interviewMap.get(phone);
-
-        const matched = dates.some((x) => x >= callDate && x <= maxDate);
-        if (matched) {
-          bucket.metrics.convertedCalls += 1;
-          bucket.phonesConverted.add(phone);
+      if (matched.length > 0) {
+        const b = assigneeBuckets.get(c.assignee_id);
+        if(!b) continue;
+        const uniqueItemIds = [...new Set(matched.map(m => m.inventoryPendingRequestItemId))];
+        for(const itemId of uniqueItemIds) {
+           matchedInterviewItemIds.add(itemId);
+           b.set(itemId, (b.get(itemId) || 0) + 1);
         }
       }
     }
 
-    const rows = [];
-    for (const s of staff) {
-      const b = agg.get(s.id);
+    const prItemsAll = await PendingRequestItem.findAll({
+      include: [
+        {
+          model: PendingRequest,
+          as: 'pendingRequest',
+          include: [{ model: Client, as: 'client', attributes: ['id', 'name', 'accountManagerId'] }]
+        }
+      ]
+    });
 
-      b.metrics.uniquePhones = b.phonesAll.size;
-      b.metrics.uniqueConvertedPhones = b.phonesConverted.size;
+    const allAccountManagers = await Auth.findAll({
+      where: { role: 'operation', isActive: true },
+      attributes: ['id', 'fullName', 'position', 'isActive'],
+      order: [['fullName', 'ASC']],
+      raw: true
+    });
 
-      for (const col of columns) {
-        totals[col.key] += Number(b.metrics[col.key] || 0);
-      }
+    const relevantItems = prItemsAll.filter(item => {
+      const isApproved = item.pendingRequest && item.pendingRequest.status === 'APPROVED';
+      const isMatched = matchedInterviewItemIds.has(item.id);
+      return isApproved || isMatched;
+    });
 
-      rows.push({
-        assignee: {
-          id: s.id,
-          fullName: s.fullName,
-          email: s.email,
-          position: s.position,
-          isActive: s.isActive,
-        },
-        metrics: b.metrics,
-      });
+    const teamTotalBuckets = new Map();
+    for(const b of assigneeBuckets.values()) {
+       for(const [itemId, count] of b.entries()) {
+          teamTotalBuckets.set(itemId, (teamTotalBuckets.get(itemId) || 0) + count);
+       }
     }
+
+    const requests = [];
+    const seenClients = new Set();
+    
+    for(const item of relevantItems) {
+       const clientId = item.pendingRequest?.client?.id;
+       if (clientId) seenClients.add(clientId);
+
+       const clientName = item.pendingRequest?.client?.name || 'Unknown Client';
+       const reqDate = item.pendingRequest?.requestDate || null;
+       const target = item.vehicleCount || 0;
+       const teamFulfilled = teamTotalBuckets.get(item.id) || 0;
+
+       const assignees = [];
+       for(const s of staff) {
+          const count = assigneeBuckets.get(s.id)?.get(item.id) || 0;
+          assignees.push({
+             assigneeId: s.id,
+             fullName: s.fullName,
+             fulfilled: count
+          });
+       }
+
+       requests.push({
+          itemId: item.id,
+          pendingRequestId: item.pendingRequestId,
+          clientName,
+          accountManagerId: item.pendingRequest?.client?.accountManagerId || null,
+          requestDate: reqDate,
+          vehicleType: item.vehicleType,
+          target,
+          teamFulfilled,
+          assignees
+       });
+    }
+
+    // append clients with 0 target
+    const allClients = await Client.findAll({ attributes: ['id', 'name', 'accountManagerId'], raw: true });
+    for (const c of allClients) {
+       if (!seenClients.has(c.id)) {
+          requests.push({
+             itemId: 0,
+             pendingRequestId: 0,
+             clientName: c.name,
+             accountManagerId: c.accountManagerId || null,
+             requestDate: null,
+             vehicleType: '—',
+             target: 0,
+             teamFulfilled: 0,
+             assignees: []
+          });
+       }
+    }
+
+    requests.sort((a, b) => a.clientName.localeCompare(b.clientName));
 
     return res.json({
       range: { from: toDateOnlyString(from), to: toDateOnlyString(to) },
-      columns,
-      totals,
-      rows,
+      accountManagers: allAccountManagers,
+      requests,
     });
   } catch (e) {
     console.error('getOperationAchievementsReport error:', e);

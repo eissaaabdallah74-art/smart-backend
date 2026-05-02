@@ -11,7 +11,10 @@ const {
   PendingRequestItem,
   AuditLog,
   Vendor,
+  Driver,
 } = require("../models");
+
+const { formatLocalEgyptianPhone } = require("../utils/phone-normalizer");
 
 const {
   upsertDriverFromInterviewId,
@@ -30,20 +33,7 @@ const INTERVIEW_INCLUDES = [
    Vehicle + Inventory helpers
    ========================= */
 
-const VEHICLE_TYPES = [
-  "SEDAN",
-  "VAN",
-  "BIKE",
-  "DABABA",
-  "NKR",
-  "TRICYCLE",
-  "JUMBO_4",
-  "JUMBO_6",
-  "HELPER",
-  "DRIVER",
-  "WORKER",
-];
-const VEHICLE_TYPES_SET = new Set(VEHICLE_TYPES);
+// Dynamic vehicle types handled from DB
 
 const PRIORITY_ORDER_SQL =
   "CASE " +
@@ -83,8 +73,7 @@ function isCourierActive(v) {
 
 function normalizeVehicleType(v) {
   if (v === null || v === undefined || v === "") return null;
-  const x = String(v).trim().toUpperCase();
-  return VEHICLE_TYPES_SET.has(x) ? x : null;
+  return String(v).trim().toUpperCase();
 }
 
 /* =========================
@@ -163,9 +152,7 @@ async function applyPendingRequestDecrementForInterview(interview, t, audit) {
 
   const vt = normalizeVehicleType(interview.vehicleType);
   if (!vt) {
-    const err = new Error(
-      "vehicleType must be one of: " + VEHICLE_TYPES.join(" | ")
-    );
+    const err = new Error("vehicleType is required to apply pending request action");
     err.statusCode = 400;
     throw err;
   }
@@ -244,6 +231,16 @@ async function applyPendingRequestDecrementForInterview(interview, t, audit) {
   const next = current - 1;
   item.vehicleCount = next;
   await item.save({ transaction: t });
+
+  const totalSum = await PendingRequestItem.sum("vehicleCount", {
+    where: { pendingRequestId: header.id },
+    transaction: t,
+  });
+  
+  if ((totalSum || 0) <= 0) {
+    header.status = "COMPLETED";
+    await header.save({ transaction: t });
+  }
 
   interview.inventoryAppliedAt = new Date();
   interview.inventoryPendingRequestId = header.id;
@@ -357,7 +354,7 @@ exports.createInterview = async (req, res) => {
       meta: { controller: "Interview", op: "CREATE" },
     });
 
-    const {
+    let {
       date,
       ticketNo,
       ticketExpiresAt,
@@ -371,6 +368,7 @@ exports.createInterview = async (req, res) => {
       zoneId,
       vendorId, // ✅ NEW
       position,
+      module,
       vehicleType,
 
       vLicenseExpiryDate,
@@ -390,6 +388,8 @@ exports.createInterview = async (req, res) => {
       securityResult,
       notes,
     } = req.body;
+    
+    phoneNumber = phoneNumber ? formatLocalEgyptianPhone(phoneNumber) : null;
 
     if (!courierName || !phoneNumber || !clientId) {
       throw Object.assign(
@@ -401,15 +401,23 @@ exports.createInterview = async (req, res) => {
     // ✅ vendorId required + exists
     await assertVendorExists(vendorId, { transaction: t });
 
+    if (nationalId) {
+      const isBlacklisted = await Driver.findOne({
+        where: { nationalId: nationalId, isBlacklisted: true },
+        transaction: t,
+      });
+      if (isBlacklisted) {
+        throw Object.assign(
+          new Error("هذا المندوب مسجل في القائمة السوداء ولا يمكن اضافته."),
+          { statusCode: 400 }
+        );
+      }
+    }
+
     const normalizedVehicleType =
       typeof vehicleType === "undefined" ? null : normalizeVehicleType(vehicleType);
 
-    if (vehicleType && !normalizedVehicleType) {
-      throw Object.assign(
-        new Error("Invalid vehicleType. Must match PendingRequestItem ENUM."),
-        { statusCode: 400 }
-      );
-    }
+    // No longer validating against hardcoded enum in controller
 
     const interviewDate = date || new Date();
 
@@ -437,7 +445,10 @@ exports.createInterview = async (req, res) => {
         zoneId,
         vendorId: Number(vendorId), // ✅ NEW
         position,
+        module,
         vehicleType: normalizedVehicleType,
+        day1Date: isCourierActive(courierStatus) ? new Date().toISOString().split('T')[0] : null,
+        hiringDate: (securityResult || "").toString().toLowerCase() === "negative" ? new Date().toISOString().split('T')[0] : null,
 
         vLicenseExpiryDate,
         dLicenseExpiryDate,
@@ -547,6 +558,7 @@ exports.updateInterview = async (req, res) => {
       "zoneId",
       "vendorId", // ✅ NEW
       "position",
+      "module",
       "vehicleType",
       "vLicenseExpiryDate",
       "dLicenseExpiryDate",
@@ -563,11 +575,24 @@ exports.updateInterview = async (req, res) => {
       "courierStatus",
       "securityResult",
       "notes",
+      "day1Date",
+      "hiringDate",
     ];
 
     const changedFields = fields.filter((f) =>
       Object.prototype.hasOwnProperty.call(req.body, f)
     );
+
+    if (req.body.nationalId) {
+      const isBlacklisted = await Driver.findOne({
+        where: { nationalId: req.body.nationalId, isBlacklisted: true },
+        transaction: t,
+      });
+      if (isBlacklisted) {
+        await t.rollback();
+        return res.status(400).json({ message: "هذا المندوب مسجل في القائمة السوداء ولا يمكن اضافته." });
+      }
+    }
 
     const wasSigned = (interview.hrFeedback || "").toString().toLowerCase().includes("signed");
     const wasActive = isCourierActive(interview.courierStatus);
@@ -577,17 +602,13 @@ exports.updateInterview = async (req, res) => {
         if (f === "vehicleType") {
           const raw = req.body[f];
           const vt = normalizeVehicleType(raw);
-          if (raw && !vt) {
-            await t.rollback();
-            return res.status(400).json({
-              message: "Invalid vehicleType. Must match PendingRequestItem ENUM.",
-            });
-          }
           interview.vehicleType = vt;
         } else if (f === "vendorId") {
           // ✅ validate vendor
           await assertVendorExists(req.body[f], { transaction: t });
           interview.vendorId = Number(req.body[f]);
+        } else if (f === "phoneNumber") {
+          interview.phoneNumber = req.body[f] ? formatLocalEgyptianPhone(req.body[f]) : null;
         } else {
           interview[f] = req.body[f];
         }
@@ -598,6 +619,19 @@ exports.updateInterview = async (req, res) => {
     if (!wasSigned && isNowSigned && !interview.ticketNo && interview.clientId) {
       interview.ticketNo = await generateUniqueTicketNo(interview.clientId);
       interview.ticketExpiresAt = addDays(new Date(), 14);
+    }
+
+    const isNowActive = isCourierActive(interview.courierStatus);
+    if (!wasActive && isNowActive) {
+      interview.day1Date = new Date().toISOString().split('T')[0];
+      if (!changedFields.includes('day1Date')) changedFields.push('day1Date');
+    }
+
+    const wasNegative = (interview.securityResult || "").toString().toLowerCase() === "negative";
+    const isNowNegative = (req.body.securityResult || interview.securityResult || "").toString().toLowerCase() === "negative";
+    if (!wasNegative && isNowNegative) {
+      interview.hiringDate = new Date().toISOString().split('T')[0];
+      if (!changedFields.includes('hiringDate')) changedFields.push('hiringDate');
     }
 
     const shortChanged = changedFields.slice(0, 8).join(", ");
@@ -616,7 +650,6 @@ exports.updateInterview = async (req, res) => {
     // ✅ sync driver row داخل نفس transaction + audit
     await upsertDriverFromInterviewId(interview.id, { transaction: t, audit });
 
-    const isNowActive = isCourierActive(interview.courierStatus);
     if (!wasActive && isNowActive) {
       try {
         inventoryAction = await sequelize.transaction(
@@ -629,6 +662,53 @@ exports.updateInterview = async (req, res) => {
           error: invErr.message,
           statusCode: invErr.statusCode || 500,
         };
+      }
+    }
+
+    // ✅ Automate Replacement Request
+    if (req.body.createReplacementRequest === true && !isNowActive) {
+      try {
+        let oldPriceProps = {};
+
+        if (interview.inventoryPendingRequestItemId) {
+           const oldItem = await PendingRequestItem.findByPk(interview.inventoryPendingRequestItemId, { transaction: t });
+           if (oldItem) {
+              oldPriceProps = {
+                 orderPrice: oldItem.orderPrice,
+                 guaranteeMinOrders: oldItem.guaranteeMinOrders,
+                 fixedAmount: oldItem.fixedAmount,
+                 allowanceAmount: oldItem.allowanceAmount,
+                 totalAmount: oldItem.totalAmount,
+              };
+           }
+        }
+
+        const replacementHeader = await PendingRequest.create({
+           clientId: interview.clientId,
+           hubId: interview.hubId || null,
+           zoneId: interview.zoneId || null,
+           requestDate: new Date().toISOString().split('T')[0],
+           billingMonth: null,
+           status: 'APPROVED',
+           priority: 'high',
+           notes: `Auto-generated replacement request for ${interview.courierName || 'Courier'} due to InActive status.`,
+           createdBy: req.user?.id || req.body.updatedById || null,
+        }, { transaction: t });
+
+        await PendingRequestItem.create({
+           pendingRequestId: replacementHeader.id,
+           vehicleType: interview.vehicleType || 'Unknown',
+           vehicleCount: 1,
+           ...oldPriceProps
+        }, { transaction: t });
+
+        inventoryAction = {
+           ...(inventoryAction || {}),
+           replacementCreated: true,
+           replacementRequestId: replacementHeader.id
+        };
+      } catch (replErr) {
+        console.error("Replacement Request error:", replErr);
       }
     }
 

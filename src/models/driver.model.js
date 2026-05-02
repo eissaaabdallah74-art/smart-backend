@@ -82,6 +82,12 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: 'vehicle_type',
       },
+      
+      vehiclePlateNumber: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        field: 'vehicle_plate_number',
+      },
 
       contractor: {
         type: DataTypes.STRING(150),
@@ -139,6 +145,17 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATEONLY,
         allowNull: true,
         field: 'id_expiry_date',
+      },
+
+      nationalId: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        field: 'national_id',
+      },
+
+      password: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
       },
 
       liabilityAmount: {
@@ -245,6 +262,26 @@ module.exports = (sequelize, DataTypes) => {
       notes: {
         type: DataTypes.TEXT,
         allowNull: true,
+      },
+
+      // ===================== Blacklist Fields =====================
+      isBlacklisted: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'is_blacklisted',
+      },
+
+      blacklistReason: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        field: 'blacklist_reason',
+      },
+
+      blacklistedAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: 'blacklisted_at',
       },
 
       // ===================== Audit Fields =====================

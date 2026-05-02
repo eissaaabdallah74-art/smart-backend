@@ -4,8 +4,13 @@ const router = express.Router();
 const clientController = require('../controllers/client.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
 
+const clientPricingRoutes = require('./client-pricing.routes');
+
 // كل routes محمية
 router.use(authMiddleware);
+
+// Mount Pricing Sub-routes
+router.use('/:clientId/pricing', clientPricingRoutes);
 
 // GET /api/clients
 router.get('/', clientController.getAllClients);

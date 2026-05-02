@@ -27,9 +27,14 @@ const SIGNED_WITH_HR_STATUSES = [
   'Unqualified',
 ];
 
+const FINANCE_TRANSACTION_TYPES = ['revenue', 'expense'];
+const PAYROLL_STATUSES = ['pending', 'paid'];
+
 module.exports = {
   DRIVER_CONTRACT_STATUSES,
   SIGNED_WITH_HR_STATUSES,
   DRIVER_PAYMENT_METHODS,
   DRIVER_LOAN_STATUSES,
+  FINANCE_TRANSACTION_TYPES,
+  PAYROLL_STATUSES,
 };

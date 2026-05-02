@@ -17,7 +17,7 @@ module.exports = (sequelize, DataTypes) => {
       },
 
       vehicleType: {
-        type: DataTypes.ENUM(...VEHICLE_TYPES),
+        type: DataTypes.STRING(100),
         allowNull: false,
         field: 'vehicle_type',
       },

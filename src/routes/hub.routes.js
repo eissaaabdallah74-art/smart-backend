@@ -9,4 +9,7 @@ router.get('/', hubController.getHubs);
 // POST /api/hubs
 router.post('/', hubController.createHub);
 
+// PUT /api/hubs/:id
+router.put('/:id', hubController.updateHub);
+
 module.exports = router;

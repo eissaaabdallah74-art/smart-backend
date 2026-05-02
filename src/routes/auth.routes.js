@@ -16,15 +16,25 @@ function requireAdmin(req, res, next) {
   return res.status(403).json({ message: "Admin access only" });
 }
 
-// ===== Auth: Login =====
 // POST /api/auth/login
 router.post("/login", authController.login);
+
+// GET /api/auth/me (Moved to top for priority)
+router.get("/me", authMiddleware, authController.getMe);
 
 // ===== Admin: CRUD Accounts =====
 // كل اللي تحت هنا محتاج token + admin
 
 // GET /api/auth/users  + فلاتر اختيارية ?role=&active=&q=&includeEmployee=true
 router.get("/users", authMiddleware, requireAdmin, authController.getAllUsers);
+
+// GET /api/auth/users/:id/target-performance
+router.get(
+  "/users/:id/target-performance",
+  authMiddleware,
+  requireAdmin,
+  authController.getUserPerformance
+);
 
 // GET /api/auth/users/:id   + optional ?includeEmployee=true
 router.get(
@@ -57,6 +67,8 @@ router.delete(
   requireAdmin,
   authController.deleteUser
 );
+
+
 
 // ===== Admin: Employees dropdown for Users =====
 // GET /api/auth/employees/available?q=&isWorking=&department=&includeLinked=

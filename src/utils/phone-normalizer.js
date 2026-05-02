@@ -18,4 +18,21 @@ function normalizePhoneEG(raw) {
 module.exports = {
   normalizePhoneEG,
   normalizePhone: normalizePhoneEG,
+  formatLocalEgyptianPhone,
 };
+
+function formatLocalEgyptianPhone(raw) {
+  if (!raw) return null;
+  let p = String(raw).replace(/\D/g, '');
+  if (!p) return null;
+
+  if (p.startsWith('0020') && p.length >= 13) p = p.substring(3);
+  else if (p.startsWith('20') && p.length >= 12) p = p.substring(2);
+  else if (p.startsWith('02') && p.length >= 12) p = p.substring(2);
+  
+  if (p.startsWith('1') && p.length === 10) {
+    p = '0' + p;
+  }
+  
+  return p;
+}

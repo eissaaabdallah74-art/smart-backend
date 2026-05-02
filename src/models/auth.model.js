@@ -43,6 +43,24 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.BOOLEAN,
         defaultValue: true,
       },
+      managerId: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        field: 'manager_id',
+      },
+      interviewTarget: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+        field: 'interview_target',
+      },
+      kpiAmount: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: false,
+        defaultValue: 0,
+        field: 'kpi_amount',
+        comment: 'Total monthly KPI amount for the user',
+      },
       // الحقول الجديدة
       hireDate: {
         type: DataTypes.DATEONLY, // تاريخ التعيين
@@ -56,6 +74,16 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATEONLY, // تاريخ الإنشاء في النظام
         allowNull: false,
         defaultValue: DataTypes.NOW,
+        field: 'creation_date',
+      },
+      permissions: {
+        type: DataTypes.JSON, // الصلاحيات التفصيلية
+        allowNull: true,
+      },
+      accessExpiresAt: {
+        type: DataTypes.DATE, // تاريخ انتهاء الوصول
+        allowNull: true,
+        field: 'access_expires_at',
       },
     },
     {

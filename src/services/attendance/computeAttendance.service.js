@@ -8,6 +8,7 @@ const {
   EmployeePayrollInsurance,
   AttendanceManualItem,
   AttendanceRequest,
+  PublicHoliday,
   sequelize,
 } = require("../../models");
 
@@ -84,12 +85,19 @@ async function computeMonthForImport(importId) {
       transaction: t,
       lock: t.LOCK.UPDATE,
     });
-
     const manualByEmp = new Map();
     for (const m of manualRows) {
       if (!manualByEmp.has(m.employeeId)) manualByEmp.set(m.employeeId, []);
       manualByEmp.get(m.employeeId).push(m);
     }
+
+    // ✅ Public Holidays for this month
+    const publicHolidays = await PublicHoliday.findAll({
+      where: { date: { [Op.between]: [start, end] } },
+      transaction: t,
+    });
+    const holidayDates = new Set(publicHolidays.map((h) => h.date));
+    const holidayMap = new Map(publicHolidays.map((h) => [h.date, h.name]));
 
     // legacy excuses map: emp__date -> minutes
     const excuseByEmpDate = new Map();
@@ -155,7 +163,21 @@ async function computeMonthForImport(importId) {
         const isException = !!d.isException;
         const dayKey = `${employeeId}__${d.date}`;
 
+        const isPublicHoliday = holidayDates.has(d.date);
         const approvedLeaveType = approvedLeaveByEmpDate.get(dayKey) || null;
+
+        // ✅ Public Holiday Handling (Highest Priority)
+        if (isPublicHoliday) {
+          d.excuseMinutesApplied = 0;
+          d.effectiveLateMinutes = 0;
+          d.graceApplied = false;
+          d.latePenaltyDays = 0;
+          d.absentPenaltyDays = 0;
+          d.totalPenaltyDays = 0;
+          d.policyReason = `public_holiday: ${holidayMap.get(d.date) || ""}`;
+          await d.save({ transaction: t });
+          continue;
+        }
 
         // ✅ Leave day handling
         if (approvedLeaveType) {

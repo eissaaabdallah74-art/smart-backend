@@ -7,6 +7,12 @@ const driverController = require('../controllers/driver.controller');
 // GET /api/drivers
 router.get('/', driverController.getAllDrivers);
 
+// GET /api/drivers/blacklist/all
+router.get('/blacklist/all', driverController.getBlacklistedDrivers);
+
+// POST /api/drivers/:id/blacklist
+router.post('/:id/blacklist', driverController.toggleBlacklist);
+
 // ✅ POST /api/drivers/sync-from-interviews
 router.post('/sync-from-interviews', driverController.syncDriversFromInterviews);
 

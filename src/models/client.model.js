@@ -71,10 +71,14 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.ENUM('1', '2'),
         allowNull: true,
       },
-      clientType: {
-        type: DataTypes.STRING(100),
+      companyCode: {
+        type: DataTypes.ENUM('SMV', 'SLS'),
         allowNull: true,
-        field: 'client_type',
+        field: 'company_code',
+      },
+      color: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
       },
     },
     {

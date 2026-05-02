@@ -36,6 +36,12 @@ module.exports = (sequelize, DataTypes) => {
         field: "courier_name",
       },
 
+      courierId: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        field: "courier_id",
+      },
+
       phoneNumber: {
         type: DataTypes.STRING(40),
         allowNull: false,
@@ -78,9 +84,20 @@ module.exports = (sequelize, DataTypes) => {
       },
 
       vehicleType: {
-        type: DataTypes.ENUM(...VEHICLE_TYPES),
+        type: DataTypes.STRING(100),
         allowNull: true,
         field: "vehicle_type",
+      },
+
+      vehiclePlateNumber: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        field: "vehicle_plate_number",
+      },
+
+      module: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
       },
 
       // ===================== NEW: Expiry Dates (to sync into Driver) =====================
@@ -180,6 +197,18 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(20),
         allowNull: true,
         field: "security_result",
+      },
+
+      day1Date: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: "day1_date",
+      },
+
+      hiringDate: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: "hiring_date",
       },
 
       vendorId: {

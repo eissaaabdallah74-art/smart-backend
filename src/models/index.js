@@ -10,15 +10,30 @@ db.sequelize = sequelize;
 db.Auth = require("./auth.model")(sequelize, DataTypes);
 db.Client = require("./client.model")(sequelize, DataTypes);
 db.ClientContract = require("./client-contract.model")(sequelize, DataTypes);
+db.ClientPricing = require("./client-pricing.model")(sequelize, DataTypes);
+db.VehicleType = require("./vehicle-type.model")(sequelize, DataTypes);
+db.BusinessModule = require("./business-module.model")(sequelize, DataTypes);
+db.ClientModule = require("./client-module.model")(sequelize, DataTypes);
+db.SystemAlias = require("./system-alias.model")(sequelize, DataTypes);
+db.LandingPageSetting = require("./landing-page-setting.model")(sequelize, DataTypes);
 db.Driver = require("./driver.model")(sequelize, DataTypes);
-db.Tracking = require("./tracking.model")(sequelize, DataTypes);
 db.Hub = require("./hub.model")(sequelize, DataTypes);
 db.Zone = require("./zone.model")(sequelize, DataTypes);
 db.Interview = require("./interview.model")(sequelize, DataTypes);
+db.CourierRegistration = require("./courier-registration.model")(
+  sequelize,
+  DataTypes
+);
 
 db.Vendor = require("./vendor.model")(sequelize, DataTypes);
 
 db.DriverLoan = require("./driver-loan.model")(sequelize, DataTypes);
+db.DriverComplaint = require("./driver-complaint.model")(sequelize, DataTypes);
+db.DriverFinancialRequest = require("./driver-financial-request.model")(sequelize, DataTypes);
+
+// ===================== Notifications =====================
+db.DriverNotificationBlast = require("./driver-notification-blast.model")(sequelize, DataTypes);
+db.DriverNotification = require("./driver-notification.model")(sequelize, DataTypes);
 
 // ===================== Audit Logs =====================
 db.AuditLog = require("./audit-log.model")(sequelize, DataTypes);
@@ -40,6 +55,13 @@ db.AttendanceManualItem = require("./attendance-manual-item.model")(
   DataTypes
 );
 db.AttendanceRequest = require("./attendance-request.model")(sequelize, DataTypes);
+db.PublicHoliday = require("./public-holiday.model")(sequelize, DataTypes);
+
+// ===================== ZKTeco Attendance Module =====================
+db.AttendanceDevice = require("./attendance-device.model")(sequelize, DataTypes);
+db.AttendanceDeviceUser = require("./attendance-device-user.model")(sequelize, DataTypes);
+db.AttendanceRawLog = require("./attendance-raw-log.model")(sequelize, DataTypes);
+db.EmployeeDeviceMapping = require("./employee-device-mapping.model")(sequelize, DataTypes);
 
 // Optional (if exists in your codebase)
 try {
@@ -97,11 +119,31 @@ db.Company = require("./company.model")(sequelize, DataTypes);
 db.DocumentType = require("./document-type.model")(sequelize, DataTypes);
 db.CompanyDocument = require("./company-document.model")(sequelize, DataTypes);
 
+// ===================== Finance Module =====================
+db.FinanceCategory = require("./finance-category.model")(sequelize, DataTypes);
+db.FinanceTransaction = require("./finance-transaction.model")(
+  sequelize,
+  DataTypes
+);
+db.Payroll = require("./payroll.model")(sequelize, DataTypes);
+db.Breakdown = require("./breakdown.model")(sequelize, DataTypes);
+
+// ===================== WhatsApp Module =====================
+db.WhatsappTemplateGroup = require("./whatsapp-template-group.model")(sequelize, DataTypes);
+db.WhatsappTemplate = require("./whatsapp-template.model")(sequelize, DataTypes);
+
+// ===================== KPI Module =====================
+db.KpiElement = require("./kpi-element.model")(sequelize, DataTypes);
+db.UserKpiConfig = require("./user-kpi-config.model")(sequelize, DataTypes);
+db.UserKpiEvaluation = require("./user-kpi-evaluation.model")(sequelize, DataTypes);
+
 // ===================== Relations =====================
 
-// Tracking ↔ Driver
-db.Tracking.belongsTo(db.Driver, { foreignKey: "driver_id", as: "driver" });
-db.Driver.hasMany(db.Tracking, { foreignKey: "driver_id", as: "trackingRows" });
+// Breakdown ↔ Client
+db.Breakdown.belongsTo(db.Client, { foreignKey: "client_id", as: "client" });
+db.Client.hasMany(db.Breakdown, { foreignKey: "client_id", as: "breakdowns" });
+
+// Tracking relation removed as it is now merged into Driver
 
 // Client ↔ Contracts
 db.Client.hasMany(db.ClientContract, {
@@ -113,6 +155,48 @@ db.Client.hasMany(db.ClientContract, {
 db.ClientContract.belongsTo(db.Client, {
   foreignKey: { name: "clientId", field: "client_id" },
   as: "client",
+});
+
+// Client ↔ ClientModule
+db.Client.hasMany(db.ClientModule, {
+  foreignKey: { name: "clientId", field: "client_id" },
+  as: "modules",
+  onDelete: "CASCADE",
+  hooks: true,
+});
+db.ClientModule.belongsTo(db.Client, {
+  foreignKey: { name: "clientId", field: "client_id" },
+  as: "client",
+});
+
+// Client ↔ Pricing
+db.Client.hasMany(db.ClientPricing, {
+  foreignKey: { name: "clientId", field: "client_id" },
+  as: "pricingRules",
+  onDelete: "CASCADE",
+  hooks: true,
+});
+db.ClientPricing.belongsTo(db.Client, {
+  foreignKey: { name: "clientId", field: "client_id" },
+  as: "client",
+});
+
+db.Hub.hasMany(db.ClientPricing, {
+  foreignKey: { name: "hubId", field: "hub_id" },
+  as: "pricingRules",
+});
+db.ClientPricing.belongsTo(db.Hub, {
+  foreignKey: { name: "hubId", field: "hub_id" },
+  as: "hub",
+});
+
+db.Zone.hasMany(db.ClientPricing, {
+  foreignKey: { name: "zoneId", field: "zone_id" },
+  as: "pricingRules",
+});
+db.ClientPricing.belongsTo(db.Zone, {
+  foreignKey: { name: "zoneId", field: "zone_id" },
+  as: "zone",
 });
 
 
@@ -143,6 +227,10 @@ db.Interview.belongsTo(db.Zone, { foreignKey: "zone_id", as: "zone" });
 db.Interview.belongsTo(db.Auth, {
   foreignKey: "account_manager_id",
   as: "accountManager",
+});
+db.Auth.hasMany(db.Interview, {
+  foreignKey: "account_manager_id",
+  as: "managedInterviews",
 });
 db.Interview.belongsTo(db.Auth, {
   foreignKey: "interviewer_id",
@@ -208,6 +296,10 @@ db.Task.belongsTo(db.Auth, { foreignKey: "assignee_id", as: "assignee" });
 
 db.Auth.hasMany(db.Task, { foreignKey: "created_by_id", as: "createdTasks" });
 db.Task.belongsTo(db.Auth, { foreignKey: "created_by_id", as: "createdBy" });
+
+// Hierarchy (Organization structure)
+db.Auth.belongsTo(db.Auth, { foreignKey: "manager_id", as: "manager" });
+db.Auth.hasMany(db.Auth, { foreignKey: "manager_id", as: "subordinates" });
 
 // HR Employees Relations
 db.Employee.belongsTo(db.Auth, {
@@ -367,6 +459,19 @@ db.DriverLoan.belongsTo(db.Driver, {
   as: "driver",
 });
 
+// Driver ↔ DriverComplaint
+db.Driver.hasMany(db.DriverComplaint, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "complaints",
+  onDelete: "CASCADE",
+  hooks: true,
+});
+
+db.DriverComplaint.belongsTo(db.Driver, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "driver",
+});
+
 // DriverLoan ↔ Auth (audit / decision)
 db.DriverLoan.belongsTo(db.Auth, {
   foreignKey: "created_by_id",
@@ -512,6 +617,49 @@ db.Driver.belongsTo(db.Vendor, { foreignKey: "vendor_id", as: "vendor" });
 db.Vendor.hasMany(db.Interview, { foreignKey: "vendor_id", as: "interviews" });
 db.Interview.belongsTo(db.Vendor, { foreignKey: "vendor_id", as: "vendor" });
 
+// ===================== Finance Relations =====================
+
+// FinanceTransaction ↔ FinanceCategory
+db.FinanceCategory.hasMany(db.FinanceTransaction, {
+  foreignKey: "category_id",
+  as: "transactions",
+});
+db.FinanceTransaction.belongsTo(db.FinanceCategory, {
+  foreignKey: "category_id",
+  as: "category",
+});
+
+// Payroll ↔ Employee
+db.Employee.hasMany(db.Payroll, {
+  foreignKey: "employee_id",
+  as: "payrolls",
+});
+db.Payroll.belongsTo(db.Employee, {
+  foreignKey: "employee_id",
+  as: "employee",
+});
+
+// Payroll ↔ Driver
+db.Driver.hasMany(db.Payroll, {
+  foreignKey: "driver_id",
+  as: "payrolls",
+});
+db.Payroll.belongsTo(db.Driver, {
+  foreignKey: "driver_id",
+  as: "driver",
+});
+
+// FinanceTransaction ↔ Auth (CreatedBy)
+db.FinanceTransaction.belongsTo(db.Auth, {
+  foreignKey: "created_by_id",
+  as: "createdBy",
+});
+
+// Payroll ↔ FinanceTransaction (Reference)
+// Note: This is a loose relation via referenceId/referenceType, 
+// but we can also add a direct relation if we want. 
+// For now, let's keep it flexible.
+
 // ===================== Attach Audit Hooks =====================
 const { attachAuditHooks } = require("../services/audit-hooks.service");
 
@@ -537,5 +685,129 @@ attachAuditHooks({
   AuditLogModel: db.AuditLog,
 });
 
+// Setup Whatsapp Relations
+if (db.WhatsappTemplateGroup && db.WhatsappTemplate) {
+  db.WhatsappTemplateGroup.hasMany(db.WhatsappTemplate, {
+    foreignKey: "groupId",
+    as: "templates",
+    onDelete: "CASCADE",
+  });
+  db.WhatsappTemplate.belongsTo(db.WhatsappTemplateGroup, {
+    foreignKey: "groupId",
+    as: "group",
+  });
+}
+
+// Driver Financial Requests Relations
+db.Driver.hasMany(db.DriverFinancialRequest, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "financialRequests",
+});
+db.DriverFinancialRequest.belongsTo(db.Driver, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "driver",
+});
+db.DriverFinancialRequest.belongsTo(db.Auth, {
+  foreignKey: { name: "accountManagerId", field: "account_manager_id" },
+  as: "accountManager",
+});
+
+// Notifications Relations
+db.DriverNotificationBlast.belongsTo(db.Auth, {
+  foreignKey: { name: "senderId", field: "sender_id" },
+  as: "sender",
+});
+db.DriverNotification.belongsTo(db.DriverNotificationBlast, {
+  foreignKey: { name: "blastId", field: "blast_id" },
+  as: "blast",
+  onDelete: "CASCADE",
+});
+db.DriverNotification.belongsTo(db.Driver, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "driver",
+  onDelete: "CASCADE",
+});
+db.Driver.hasMany(db.DriverNotification, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "notifications",
+});
+
+// ===================== KPI Relations =====================
+db.KpiElement.hasMany(db.UserKpiConfig, {
+  foreignKey: { name: 'kpiElementId', field: 'kpi_element_id' },
+  as: 'userConfigs'
+});
+db.UserKpiConfig.belongsTo(db.KpiElement, {
+  foreignKey: { name: 'kpiElementId', field: 'kpi_element_id' },
+  as: 'kpiElement'
+});
+
+db.Auth.hasMany(db.UserKpiConfig, {
+  foreignKey: { name: 'authUserId', field: 'auth_user_id' },
+  as: 'kpiConfigs'
+});
+db.UserKpiConfig.belongsTo(db.Auth, {
+  foreignKey: { name: 'authUserId', field: 'auth_user_id' },
+  as: 'user'
+});
+
+db.UserKpiConfig.hasMany(db.UserKpiEvaluation, {
+  foreignKey: { name: 'userKpiConfigId', field: 'user_kpi_config_id' },
+  as: 'evaluations'
+});
+db.UserKpiEvaluation.belongsTo(db.UserKpiConfig, {
+  foreignKey: { name: 'userKpiConfigId', field: 'user_kpi_config_id' },
+  as: 'config'
+});
+
+db.Auth.hasMany(db.UserKpiEvaluation, {
+  foreignKey: { name: 'evaluatedById', field: 'evaluated_by_id' },
+  as: 'givenEvaluations'
+});
+db.UserKpiEvaluation.belongsTo(db.Auth, {
+  foreignKey: { name: 'evaluatedById', field: 'evaluated_by_id' },
+  as: 'evaluator'
+});
+
+// ===================== ZKTeco Relations =====================
+db.AttendanceDevice.hasMany(db.AttendanceDeviceUser, {
+  foreignKey: { name: 'attendanceDeviceId', field: 'attendance_device_id' },
+  as: 'users',
+  onDelete: 'CASCADE'
+});
+db.AttendanceDeviceUser.belongsTo(db.AttendanceDevice, {
+  foreignKey: { name: 'attendanceDeviceId', field: 'attendance_device_id' },
+  as: 'device'
+});
+
+db.AttendanceDevice.hasMany(db.AttendanceRawLog, {
+  foreignKey: { name: 'attendanceDeviceId', field: 'attendance_device_id' },
+  as: 'rawLogs',
+  onDelete: 'CASCADE'
+});
+db.AttendanceRawLog.belongsTo(db.AttendanceDevice, {
+  foreignKey: { name: 'attendanceDeviceId', field: 'attendance_device_id' },
+  as: 'device'
+});
+
+db.Employee.hasMany(db.EmployeeDeviceMapping, {
+  foreignKey: { name: 'employeeId', field: 'employee_id' },
+  as: 'deviceMappings',
+  onDelete: 'CASCADE'
+});
+db.EmployeeDeviceMapping.belongsTo(db.Employee, {
+  foreignKey: { name: 'employeeId', field: 'employee_id' },
+  as: 'employee'
+});
+
+db.AttendanceDevice.hasMany(db.EmployeeDeviceMapping, {
+  foreignKey: { name: 'attendanceDeviceId', field: 'attendance_device_id' },
+  as: 'employeeMappings',
+  onDelete: 'CASCADE'
+});
+db.EmployeeDeviceMapping.belongsTo(db.AttendanceDevice, {
+  foreignKey: { name: 'attendanceDeviceId', field: 'attendance_device_id' },
+  as: 'device'
+});
 
 module.exports = db;

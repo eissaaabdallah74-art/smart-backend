@@ -230,7 +230,7 @@ exports.bulkImportContracts = async (req, res) => {
             crm: contractNumber ? String(contractNumber) : null, // اختياري: ممكن تسيبه null
             isActive: true,
             company: '1',
-            clientType: 'Class A',
+            companyCode: 'SMV',
             contractDate: startDate,
             contractTerminationDate: null,
           },

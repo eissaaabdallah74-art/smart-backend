@@ -32,6 +32,32 @@ module.exports = (sequelize, DataTypes) => {
         },
       },
 
+      installmentsCount: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 1,
+        field: 'installments_count',
+        validate: {
+          min: 1
+        }
+      },
+
+      paidAmount: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: false,
+        defaultValue: 0.00,
+        field: 'paid_amount',
+      },
+
+      installmentAmount: {
+        type: DataTypes.VIRTUAL,
+        get() {
+          const amount = parseFloat(this.getDataValue('amount')) || 0;
+          const count = parseInt(this.getDataValue('installmentsCount'), 10) || 1;
+          return Number((amount / count).toFixed(2));
+        }
+      },
+
       paymentMethod: {
         type: DataTypes.ENUM(...DRIVER_PAYMENT_METHODS),
         allowNull: false,
