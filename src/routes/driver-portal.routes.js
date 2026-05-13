@@ -14,6 +14,10 @@ router.post('/complaints', controller.createComplaint);
 
 router.get('/payroll', controller.getPayrollBreakdowns);
 
+router.get('/attendance', controller.getAttendance);
+router.post('/attendance/check-in', controller.checkIn);
+router.post('/attendance/check-out', controller.checkOut);
+
 router.get('/notifications', controller.getNotifications);
 router.post('/notifications/:id/read', controller.markNotificationRead);
 

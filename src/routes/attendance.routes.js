@@ -5,6 +5,7 @@ const router = express.Router();
 const authMiddleware = require("../middlewares/auth.middleware");
 const { requireHRorAdmin } = require("../middlewares/role.helpers");
 const attendanceController = require("../controllers/attendance.controller");
+const attendanceOverridesController = require("../controllers/attendance-overrides.controller");
 
 // HR/Admin only
 router.use(authMiddleware, requireHRorAdmin);
@@ -15,6 +16,7 @@ router.post(
   attendanceController.uploadMiddleware,
   attendanceController.importSheet
 );
+router.post("/sync-from-logs", attendanceController.syncFromLogs);
 
 router.get("/imports", attendanceController.listImports);
 router.get("/monthly-summary", attendanceController.getMonthlySummary);
@@ -40,5 +42,10 @@ router.delete(
   "/employee/:employeeId/manual/:manualId",
   attendanceController.deleteEmployeeManualItem
 );
+
+// Overrides & Flexibility
+router.patch("/summary/:id", attendanceOverridesController.updateSummaryOverrides);
+router.post("/summary-bulk-lock", attendanceOverridesController.lockMonthSummaries);
+router.post("/waive-day", attendanceOverridesController.waiveDayPenalty);
 
 module.exports = router;

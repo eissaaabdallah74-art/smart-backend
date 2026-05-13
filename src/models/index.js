@@ -35,6 +35,8 @@ db.DriverFinancialRequest = require("./driver-financial-request.model")(sequeliz
 db.DriverNotificationBlast = require("./driver-notification-blast.model")(sequelize, DataTypes);
 db.DriverNotification = require("./driver-notification.model")(sequelize, DataTypes);
 
+db.DriverAttendance = require("./driver-attendance.model")(sequelize, DataTypes);
+
 // ===================== Audit Logs =====================
 db.AuditLog = require("./audit-log.model")(sequelize, DataTypes);
 
@@ -56,6 +58,7 @@ db.AttendanceManualItem = require("./attendance-manual-item.model")(
 );
 db.AttendanceRequest = require("./attendance-request.model")(sequelize, DataTypes);
 db.PublicHoliday = require("./public-holiday.model")(sequelize, DataTypes);
+db.SystemSetting = require("./system-setting.model")(sequelize, DataTypes);
 
 // ===================== ZKTeco Attendance Module =====================
 db.AttendanceDevice = require("./attendance-device.model")(sequelize, DataTypes);
@@ -85,6 +88,8 @@ db.Call = require("./call.model")(sequelize, DataTypes);
 
 // ===================== Tasks =====================
 db.Task = require("./task.model")(sequelize, DataTypes);
+db.SystemNotification = require("./system-notification.model")(sequelize, DataTypes);
+db.ChatMessage = require("./chat-message.model")(sequelize, DataTypes);
 
 // ===================== HR Employees =====================
 db.Employee = require("./employee.model")(sequelize, DataTypes);
@@ -127,6 +132,7 @@ db.FinanceTransaction = require("./finance-transaction.model")(
 );
 db.Payroll = require("./payroll.model")(sequelize, DataTypes);
 db.Breakdown = require("./breakdown.model")(sequelize, DataTypes);
+db.PayrollSetting = require("./payroll-setting.model")(sequelize, DataTypes);
 
 // ===================== WhatsApp Module =====================
 db.WhatsappTemplateGroup = require("./whatsapp-template-group.model")(sequelize, DataTypes);
@@ -232,6 +238,10 @@ db.Auth.hasMany(db.Interview, {
   foreignKey: "account_manager_id",
   as: "managedInterviews",
 });
+db.Auth.hasMany(db.Interview, {
+  foreignKey: "account_manager_id",
+  as: "day1Interviews",
+});
 db.Interview.belongsTo(db.Auth, {
   foreignKey: "interviewer_id",
   as: "interviewer",
@@ -296,6 +306,13 @@ db.Task.belongsTo(db.Auth, { foreignKey: "assignee_id", as: "assignee" });
 
 db.Auth.hasMany(db.Task, { foreignKey: "created_by_id", as: "createdTasks" });
 db.Task.belongsTo(db.Auth, { foreignKey: "created_by_id", as: "createdBy" });
+
+// System Notifications Relations
+db.Auth.hasMany(db.SystemNotification, { foreignKey: "user_id", as: "systemNotifications" });
+db.SystemNotification.belongsTo(db.Auth, { foreignKey: "user_id", as: "user" });
+
+db.Task.hasMany(db.SystemNotification, { foreignKey: "related_task_id", as: "notifications" });
+db.SystemNotification.belongsTo(db.Task, { foreignKey: "related_task_id", as: "task" });
 
 // Hierarchy (Organization structure)
 db.Auth.belongsTo(db.Auth, { foreignKey: "manager_id", as: "manager" });
@@ -732,6 +749,17 @@ db.Driver.hasMany(db.DriverNotification, {
   as: "notifications",
 });
 
+// Driver Attendance Relations
+db.Driver.hasMany(db.DriverAttendance, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "attendances",
+  onDelete: "CASCADE",
+});
+db.DriverAttendance.belongsTo(db.Driver, {
+  foreignKey: { name: "driverId", field: "driver_id" },
+  as: "driver",
+});
+
 // ===================== KPI Relations =====================
 db.KpiElement.hasMany(db.UserKpiConfig, {
   foreignKey: { name: 'kpiElementId', field: 'kpi_element_id' },
@@ -810,4 +838,11 @@ db.EmployeeDeviceMapping.belongsTo(db.AttendanceDevice, {
   as: 'device'
 });
 
+// ===================== Chat Relations =====================
+db.ChatMessage.belongsTo(db.Auth, { as: "sender", foreignKey: "sender_id" });
+db.ChatMessage.belongsTo(db.Auth, { as: "receiver", foreignKey: "receiver_id" });
+db.Auth.hasMany(db.ChatMessage, { as: "sentMessages", foreignKey: "sender_id" });
+db.Auth.hasMany(db.ChatMessage, { as: "receivedMessages", foreignKey: "receiver_id" });
+
 module.exports = db;
+

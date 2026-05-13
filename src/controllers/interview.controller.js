@@ -302,6 +302,7 @@ exports.getAllInterviews = async (req, res) => {
     if (zoneId) where.zoneId = Number(zoneId);
     if (vendorId) where.vendorId = Number(vendorId); // ✅ NEW
     if (status) where.courierStatus = status;
+    if (req.query.signedWithHr) where.signedWithHr = req.query.signedWithHr;
 
     const interviews = await Interview.findAll({
       where,

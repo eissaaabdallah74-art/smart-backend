@@ -1,13 +1,16 @@
-// src/services/attendance/importAttendance.service.js
 const XLSX = require('xlsx');
 const { Op } = require('sequelize');
 const {
   AttendanceImport,
   AttendanceDay,
   EmployeeAttendanceProfile,
-  Employee, // ✅ NEW
+  Employee,
+  AttendanceRawLog,
+  EmployeeDeviceMapping,
   sequelize,
 } = require('../../models');
+
+const dayjs = require('dayjs');
 
 const {
   normalizeKey,
@@ -17,6 +20,15 @@ const {
   parseClockDateTime,
   getMonthKeyFromISODate,
 } = require('./attendance.utils');
+
+function getMonthBounds(month) {
+  const [y, m] = String(month).split("-").map((x) => Number(x));
+  const lastDay = new Date(y, m, 0).getDate();
+  return {
+    start: `${month}-01`,
+    end: `${month}-${String(lastDay).padStart(2, "0")}`,
+  };
+}
 
 function normalizeRowKeys(row) {
   const out = {};
@@ -32,33 +44,20 @@ function pick(row, ...keys) {
   return null;
 }
 
-/**
- * Normalize National ID:
- * - keep digits only
- * - handle Excel scientific notation (e.g. 2.96E+13)
- * - return only if 14 digits
- */
 function normalizeNationalId(value) {
   if (value === null || typeof value === 'undefined') return null;
-
-  // If it's a number -> integer string
   if (typeof value === 'number' && Number.isFinite(value)) {
     const s = String(Math.trunc(value));
     return s.length === 14 ? s : null;
   }
-
   let s = String(value).trim();
   if (!s) return null;
-
-  // handle scientific notation strings
   if (/^\d+(\.\d+)?[eE][+-]?\d+$/.test(s)) {
     const n = Number(s);
     if (Number.isFinite(n)) s = String(Math.trunc(n));
   }
-
   s = s.replace(/[^\d]/g, ''); // digits only
   if (s.length !== 14) return null;
-
   return s;
 }
 
@@ -68,7 +67,116 @@ function chunkArray(arr, size) {
   return out;
 }
 
+async function syncAttendanceFromRawLogs({ month, uploadedBy, startTime = "09:00" }) {
+  const t = await sequelize.transaction();
+  try {
+    const { start, end } = getMonthBounds(month);
+
+    // 1. Fetch all raw logs for the month
+    const logs = await AttendanceRawLog.findAll({
+      where: {
+        punchTime: {
+          [Op.between]: [new Date(`${start} 00:00:00`), new Date(`${end} 23:59:59`)]
+        }
+      },
+      order: [['punchTime', 'ASC']],
+      transaction: t
+    });
+
+    if (!logs.length) {
+      await t.rollback();
+      return { ok: false, message: 'No logs found for this month' };
+    }
+
+    // 2. Fetch all mappings
+    const mappings = await EmployeeDeviceMapping.findAll({ transaction: t });
+    const mappingMap = new Map();
+    for (const m of mappings) {
+      mappingMap.set(`${m.attendanceDeviceId}-${m.deviceUserId}`, m.employeeId);
+    }
+
+    // 3. Group logs by employee and date
+    const grouped = {}; // employeeId -> date -> logs[]
+    const dateSet = new Set();
+
+    for (const log of logs) {
+      const empId = mappingMap.get(`${log.attendanceDeviceId}-${log.deviceUserId}`);
+      if (!empId) continue;
+
+      const dateStr = dayjs(log.punchTime).format('YYYY-MM-DD');
+      dateSet.add(dateStr);
+
+      if (!grouped[empId]) grouped[empId] = {};
+      if (!grouped[empId][dateStr]) grouped[empId][dateStr] = [];
+      grouped[empId][dateStr].push(log);
+    }
+
+    // 4. Create Import record
+    const imp = await AttendanceImport.create({
+      month,
+      status: 'processing',
+      originalFilename: `SYNC_FROM_DEVICE_${startTime.replace(':', '')}`,
+      uploadedBy
+    }, { transaction: t });
+
+    // 5. Build Day records
+    const dayRows = [];
+    const [startH, startM] = startTime.split(':').map(Number);
+
+    for (const empIdStr of Object.keys(grouped)) {
+      const employeeId = parseInt(empIdStr, 10);
+      const dates = grouped[empIdStr];
+
+      for (const dateISO of Object.keys(dates)) {
+        const dayLogs = dates[dateISO];
+        const clockIn = dayLogs[0].punchTime;
+        const clockOut = dayLogs.length > 1 ? dayLogs[dayLogs.length - 1].punchTime : null;
+
+        // Calculate late minutes
+        const refStartTime = dayjs(dateISO).hour(startH).minute(startM).second(0);
+        const actualIn = dayjs(clockIn);
+        const lateMinutes = Math.max(0, actualIn.diff(refStartTime, 'minute'));
+
+        dayRows.push({
+          importId: imp.id,
+          employeeId,
+          month,
+          date: dateISO,
+          clockIn,
+          clockOut,
+          lateMinutes,
+          absent: false,
+          rawJson: { source: 'device_sync', logsCount: dayLogs.length, shiftStart: startTime }
+        });
+      }
+    }
+
+    // 6. Bulk Create Days
+    if (dayRows.length) {
+      await AttendanceDay.bulkCreate(dayRows, { transaction: t });
+    }
+
+    // 7. Update Import
+    await imp.update({
+      status: 'done',
+      workingDaysCount: dateSet.size,
+      rowsCount: logs.length,
+      matchedRowsCount: dayRows.length,
+      unmatchedRowsCount: 0 
+    }, { transaction: t });
+
+    await t.commit();
+    return { ok: true, importId: imp.id, month, matchedRowsCount: dayRows.length };
+
+  } catch (error) {
+    await t.rollback();
+    throw error;
+  }
+}
+
 async function importAttendanceFromBuffer({ buffer, filename, uploadedBy }) {
+  // ... (rest of the file)
+
   const t = await sequelize.transaction();
   try {
     const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
@@ -277,4 +385,4 @@ async function importAttendanceFromBuffer({ buffer, filename, uploadedBy }) {
   }
 }
 
-module.exports = { importAttendanceFromBuffer };
+module.exports = { importAttendanceFromBuffer, syncAttendanceFromRawLogs };

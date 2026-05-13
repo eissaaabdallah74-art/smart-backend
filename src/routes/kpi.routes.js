@@ -22,4 +22,13 @@ router.post('/evaluate-manual', kpiController.submitManualEvaluation);
 // Calculate monthly KPI for a user
 router.get('/calculate/:authUserId', kpiController.calculateMonthlyKpi);
 
+// Update KPI Element (Admin only ideally)
+router.put('/elements/:id', kpiController.updateKpiElement);
+
+// Create KPI Element
+router.post('/elements', kpiController.createKpiElement);
+
+// Delete KPI Element
+router.delete('/elements/:id', kpiController.deleteKpiElement);
+
 module.exports = router;

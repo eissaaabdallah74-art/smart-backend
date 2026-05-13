@@ -1,197 +1,123 @@
-const {
-    Payroll, Employee, Driver, EmployeePayrollInsurance,
-    AttendanceMonthlySummary, LoanInstallment, FinanceTransaction,
-    FinanceCategory, sequelize
-} = require('../models');
-const { Op } = require('sequelize');
+const { Employee, EmployeePayrollInsurance, Auth, sequelize, PayrollSetting } = require('../models');
+const { calculateGrossToNet, calculateNetToGross } = require('../utils/payroll-calculator');
 
-exports.getAllPayrolls = async (req, res) => {
-    try {
-        const { month, year, type, status } = req.query;
-        const where = {};
-        if (month) where.month = month;
-        if (year) where.year = year;
-        if (status) where.status = status;
+async function getPayrollSettings() {
+  let settings = await PayrollSetting.findOne({ where: { country: 'EG', year: 2026 } });
+  if (!settings) {
+    // Return hardcoded 2026 defaults as absolute fallback
+    return {
+      employeeSocialInsuranceRate: 0.11,
+      employerSocialInsuranceRate: 0.1875,
+      martyrFundRate: 0.0005,
+      annualPersonalExemption: 20000,
+      minInsuredSalary: 2700,
+      maxInsuredSalary: 16700,
+      taxBrackets: [
+        { from: 0, to: 40000, rate: 0 },
+        { from: 40000, to: 55000, rate: 0.10 },
+        { from: 55000, to: 70000, rate: 0.15 },
+        { from: 70000, to: 200000, rate: 0.20 },
+        { from: 200000, to: 400000, rate: 0.225 },
+        { from: 400000, to: null, rate: 0.25 },
+      ],
+      highIncomeAdjustments: [
+        { limit: 600000, startingRate: 0, remove0: false },
+        { limit: 700000, startingRate: 0.10, remove0: true },
+        { limit: 800000, startingRate: 0.15, remove0: true },
+        { limit: 900000, startingRate: 0.20, remove0: true },
+        { limit: 1200000, startingRate: 0.225, remove0: true },
+        { limit: 1200001, startingRate: 0.25, remove0: true, specialBracket: { limit: 1200000, rate: 0.275 } }
+      ],
+      payrollMode: 'NO_EXEMPT_ALLOWANCES',
+      allowanceEnabled: false,
+      allowancePercentage: 30,
+      allowanceCalculationMethod: 'PERCENTAGE_OF_BASIC',
+      allowanceTaxTreatment: 'TAXABLE',
+      allowanceSocialInsuranceTreatment: 'EXCLUDED_FROM_SOCIAL_INSURANCE'
+    };
+  }
+  return settings;
+}
 
-        if (type === 'employee') {
-            where.employeeId = { [Op.ne]: null };
-        } else if (type === 'driver') {
-            where.driverId = { [Op.ne]: null };
+exports.getPayrollList = async (req, res) => {
+  try {
+    const employees = await Employee.findAll({
+      include: [
+        {
+          model: EmployeePayrollInsurance,
+          as: 'payrollInsurance',
         }
+      ],
+      order: [['fullName', 'ASC']]
+    });
 
-        const payrolls = await Payroll.findAll({
-            where,
-            include: [
-                { model: Employee, as: 'employee', attributes: ['fullName'] },
-                { model: Driver, as: 'driver', attributes: ['name'] }
-            ],
-            order: [['year', 'DESC'], ['month', 'DESC'], ['id', 'ASC']]
-        });
-
-        return res.json(payrolls);
-    } catch (error) {
-        console.error('getAllPayrolls error:', error);
-        return res.status(500).json({ message: 'Internal server error' });
-    }
+    res.json(employees);
+  } catch (error) {
+    console.error('getPayrollList error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 };
 
-exports.generatePayroll = async (req, res) => {
-    const t = await sequelize.transaction();
-    try {
-        const { month, year, type } = req.body;
-        if (!month || !year || !type) {
-            return res.status(400).json({ message: 'month, year, and type are required' });
-        }
+exports.updatePayroll = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { employeeId, grossSalary, netSalary, insuredSalary } = req.body;
+    const settings = await getPayrollSettings();
 
-        const monthStr = `${year}-${String(month).padStart(2, '0')}`;
-
-        if (type === 'employee') {
-            const employees = await Employee.findAll({
-                include: [
-                    { model: EmployeePayrollInsurance, as: 'payrollInsurance' }
-                ],
-                transaction: t
-            });
-
-            for (const emp of employees) {
-                // Fetch attendance calculation (The user stated this is the primary source)
-                const attendanceSummary = await AttendanceMonthlySummary.findOne({
-                    where: { employeeId: emp.id, month: monthStr },
-                    transaction: t
-                });
-
-                let grossSalary = 0;
-                let attendanceDeduction = 0;
-
-                if (attendanceSummary) {
-                    grossSalary = Number(attendanceSummary.salaryGrossUsed) || 0;
-                    attendanceDeduction = Number(attendanceSummary.deductionAmount) || 0;
-                } else {
-                    grossSalary = emp.payrollInsurance?.grossSalary || 0;
-                }
-
-                // Fetch loan installments
-                const loanInstallment = await LoanInstallment.findOne({
-                    where: { employeeId: emp.id, month: monthStr, status: 'pending' },
-                    transaction: t
-                });
-                const loanDeduction = loanInstallment ? Number(loanInstallment.amount) : 0;
-
-                const totalDeductions = attendanceDeduction + loanDeduction;
-                const netSalary = Math.max(grossSalary - totalDeductions, 0);
-
-                await Payroll.upsert({
-                    employeeId: emp.id,
-                    month,
-                    year,
-                    basicSalary: grossSalary,
-                    allowances: 0,
-                    deductions: totalDeductions,
-                    netSalary: netSalary,
-                    status: 'pending'
-                }, { transaction: t });
-
-                // Note: We don't mark loan as deducted yet. 
-                // We do that when the payroll is marked as PAID.
-            }
-        } else if (type === 'driver') {
-            const drivers = await Driver.findAll({ transaction: t });
-            for (const driver of drivers) {
-                const salary = Number(driver.monthlySalary) || 0;
-                // Basic calculation for drivers for now
-                await Payroll.upsert({
-                    driverId: driver.id,
-                    month,
-                    year,
-                    basicSalary: salary,
-                    allowances: 0,
-                    deductions: 0,
-                    netSalary: salary,
-                    status: 'pending'
-                }, { transaction: t });
-            }
-        }
-
-        await t.commit();
-        return res.json({ message: 'Payroll generated successfully' });
-    } catch (error) {
-        await t.rollback();
-        console.error('generatePayroll error:', error);
-        return res.status(500).json({ message: 'Internal server error' });
+    let result;
+    if (netSalary && !grossSalary) {
+      result = calculateNetToGross(netSalary, settings);
+    } else {
+      result = calculateGrossToNet(grossSalary, settings);
     }
+
+    const [payroll, created] = await EmployeePayrollInsurance.findOrCreate({
+      where: { employeeId },
+      defaults: {
+        employeeId,
+        grossSalary: result.gross,
+        netSalary: result.net,
+        insuredSalary: result.insuredSalary,
+        employeeShare11: result.insurance,
+        employerShare1875: result.employerShare
+      },
+      transaction: t
+    });
+
+    if (!created) {
+      await payroll.update({
+        grossSalary: result.gross,
+        netSalary: result.net,
+        insuredSalary: result.insuredSalary,
+        employeeShare11: result.insurance,
+        employerShare1875: result.employerShare
+      }, { transaction: t });
+    }
+
+    await t.commit();
+    res.json({ success: true, data: result });
+  } catch (error) {
+    await t.rollback();
+    console.error('updatePayroll error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 };
 
-exports.markAsPaid = async (req, res) => {
-    const t = await sequelize.transaction();
-    try {
-        const { id } = req.params;
-        const payroll = await Payroll.findByPk(id, {
-            include: [
-                { model: Employee, as: 'employee' },
-                { model: Driver, as: 'driver' }
-            ],
-            transaction: t
-        });
+exports.calculatePreview = async (req, res) => {
+  try {
+    const { grossSalary, netSalary, insuredSalary, mode } = req.body;
+    const settings = await getPayrollSettings();
+    let result;
 
-        if (!payroll) {
-            await t.rollback();
-            return res.status(404).json({ message: 'Payroll not found' });
-        }
-
-        if (payroll.status === 'paid') {
-            await t.rollback();
-            return res.status(400).json({ message: 'Payroll already paid' });
-        }
-
-        // 1. Update status
-        payroll.status = 'paid';
-        payroll.paymentDate = new Date();
-        await payroll.save({ transaction: t });
-
-        // 2. Create Finance Transaction
-        let category = await FinanceCategory.findOne({
-            where: { name: 'Salaries', type: 'expense' },
-            transaction: t
-        });
-        if (!category) {
-            category = await FinanceCategory.create({
-                name: 'Salaries',
-                type: 'expense',
-                description: 'Employee and Driver salaries'
-            }, { transaction: t });
-        }
-
-        const name = payroll.employee ? payroll.employee.fullName : payroll.driver.name;
-        await FinanceTransaction.create({
-            categoryId: category.id,
-            amount: payroll.netSalary,
-            transactionDate: new Date(),
-            description: `Salary for ${name} - ${payroll.month}/${payroll.year}`,
-            referenceId: payroll.id,
-            referenceType: 'Payroll',
-            createdById: req.user?.id
-        }, { transaction: t });
-
-        // 3. Update Loan Installments if any
-        if (payroll.employeeId) {
-            const monthStr = `${payroll.year}-${String(payroll.month).padStart(2, '0')}`;
-            const loanInstallment = await LoanInstallment.findOne({
-                where: { employeeId: payroll.employeeId, month: monthStr, status: 'pending' },
-                transaction: t
-            });
-            if (loanInstallment) {
-                loanInstallment.status = 'deducted';
-                loanInstallment.deductedAt = new Date();
-                loanInstallment.payrollRunId = payroll.id;
-                await loanInstallment.save({ transaction: t });
-            }
-        }
-
-        await t.commit();
-        return res.json({ message: 'Payroll marked as paid' });
-    } catch (error) {
-        await t.rollback();
-        console.error('markAsPaid error:', error);
-        return res.status(500).json({ message: 'Internal server error' });
+    if (mode === 'netToGross') {
+      result = calculateNetToGross(netSalary, settings);
+    } else {
+      result = calculateGrossToNet(grossSalary, settings);
     }
+
+    res.json(result);
+  } catch (error) {
+    console.error('calculatePreview error:', error);
+    res.status(500).json({ message: 'Calculation error' });
+  }
 };

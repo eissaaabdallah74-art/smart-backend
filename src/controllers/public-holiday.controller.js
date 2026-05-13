@@ -1,5 +1,4 @@
-// src/controllers/public-holiday.controller.js
-const { PublicHoliday, sequelize } = require("../models");
+const { PublicHoliday, SystemSetting, sequelize } = require("../models");
 const { Op } = require("sequelize");
 
 // GET /api/public-holidays
@@ -118,6 +117,53 @@ exports.deleteHoliday = async (req, res) => {
     return res.json({ ok: true });
   } catch (e) {
     console.error("deleteHoliday error:", e);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// GET /api/public-holidays/weekend
+exports.getWeekendSettings = async (req, res) => {
+  try {
+    const setting = await SystemSetting.findByPk("weekend_days");
+    // Default to Friday (5) if not set. 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
+    const defaultValue = { days: [5], saturdayOff: 'all' };
+    
+    if (!setting) return res.json(defaultValue);
+    
+    const value = setting.value;
+    // Handle migration from old array-only format
+    if (Array.isArray(value)) {
+      return res.json({ days: value, saturdayOff: 'all' });
+    }
+    
+    return res.json(value);
+  } catch (e) {
+    console.error("getWeekendSettings error:", e);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// POST /api/public-holidays/weekend
+exports.updateWeekendSettings = async (req, res) => {
+  try {
+    const { days, saturdayOff } = req.body;
+    if (!Array.isArray(days)) {
+      return res.status(400).json({ message: "days must be an array of numbers (0-6)" });
+    }
+
+    const value = {
+      days,
+      saturdayOff: saturdayOff || 'all'
+    };
+
+    await SystemSetting.upsert({
+      key: "weekend_days",
+      value: value,
+    });
+
+    return res.json({ ok: true, ...value });
+  } catch (e) {
+    console.error("updateWeekendSettings error:", e);
     return res.status(500).json({ message: "Internal server error" });
   }
 };

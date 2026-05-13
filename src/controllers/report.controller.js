@@ -9,6 +9,7 @@ const {
   Client,
   Hub,
   Zone,
+  Task,
 } = require('../models');
 
 const { isOperationManagerOrSupervisor } = require('../middlewares/role.helpers');
@@ -997,5 +998,38 @@ exports.getAccountManagersFulfillmentReport = async (req, res) => {
   } catch (e) {
     console.error('getAccountManagersFulfillmentReport error:', e);
     return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+/** =========================
+ * 4) GET /api/reports/tasks
+ * ========================= */
+exports.getTasksReport = async (req, res) => {
+  try {
+    const { start_date, end_date, user_id } = req.query;
+    let whereClause = {};
+
+    if (start_date && end_date) {
+      whereClause.createdAt = {
+        [Op.between]: [new Date(start_date + 'T00:00:00'), new Date(end_date + 'T23:59:59')]
+      };
+    }
+    if (user_id) {
+      whereClause.assignee_id = user_id;
+    }
+
+    const tasks = await Task.findAll({
+      where: whereClause,
+      include: [
+        { model: Auth, as: 'assignee', attributes: ['id', 'fullName', 'role', 'position'] },
+        { model: Auth, as: 'createdBy', attributes: ['id', 'fullName'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    res.json(tasks);
+  } catch (err) {
+    console.error('getTasksReport error:', err.message);
+    res.status(500).json({ message: 'Server error' });
   }
 };

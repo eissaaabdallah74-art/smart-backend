@@ -31,4 +31,11 @@ router.get(
   reportController.getAccountManagersFulfillmentReport
 );
 
+// tasks report
+router.get(
+  '/tasks',
+  reportController.getTasksReport
+);
+
 module.exports = router;
+

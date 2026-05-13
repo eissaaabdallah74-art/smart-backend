@@ -135,6 +135,48 @@ class AttendanceSyncService {
       logs: logsResult.count
     };
   }
+
+  /**
+   * Push a user to the device
+   */
+  async pushUserToDevice(deviceId, userData) {
+    const device = await AttendanceDevice.findByPk(deviceId);
+    if (!device) throw new Error("Device not found");
+
+    const client = new ZktecoClientService(device.ipAddress, device.port);
+    try {
+      await client.connect();
+      const { uid, deviceUserId, name, password, role, cardNo } = userData;
+      await client.setUser(
+        parseInt(uid, 10), 
+        deviceUserId, 
+        name, 
+        password || '', 
+        parseInt(role, 10) || 0, 
+        parseInt(cardNo, 10) || 0
+      );
+      return { success: true };
+    } finally {
+      await client.disconnect();
+    }
+  }
+
+  /**
+   * Delete a user from the device
+   */
+  async deleteUserFromDevice(deviceId, uid) {
+    const device = await AttendanceDevice.findByPk(deviceId);
+    if (!device) throw new Error("Device not found");
+
+    const client = new ZktecoClientService(device.ipAddress, device.port);
+    try {
+      await client.connect();
+      await client.deleteUser(parseInt(uid, 10));
+      return { success: true };
+    } finally {
+      await client.disconnect();
+    }
+  }
 }
 
 module.exports = new AttendanceSyncService();

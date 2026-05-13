@@ -29,8 +29,8 @@ function requireAuth(req, res) {
 
 function requireFinanceOrAdmin(req, res) {
   const role = req.user?.role;
-  if (!(role === "admin" || role === "finance")) {
-    res.status(403).json({ message: "Finance/Admin only" });
+  if (!(role === "admin" || role === "finance" || role === "hr")) {
+    res.status(403).json({ message: "HR/Finance/Admin only" });
     return false;
   }
   return true;

@@ -29,6 +29,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: 'gross_salary',
       },
+      netSalary: {
+        type: DataTypes.DECIMAL(12, 2),
+        allowNull: true,
+        field: 'net_salary',
+      },
 
       insuredSalary: {
         type: DataTypes.DECIMAL(12, 2),

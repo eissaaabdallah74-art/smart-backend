@@ -1,66 +1,12 @@
 // src/controllers/task.controller.js
 const { Op } = require('sequelize');
-const { Task, Auth } = require('../models');
-const { isOperationManagerOrSupervisor } = require('../middlewares/role.helpers');
+const { Task, Auth, SystemNotification } = require('../models');
 
-const ALLOWED_STATUS = new Set(['todo', 'in_progress', 'completed']);
-const ALLOWED_PRIORITY = new Set(['low', 'medium', 'high']);
+// Helper to check if user is admin or sub-admin for tasks
+const isTaskAdmin = (user) => user.role === 'admin';
+const isTaskSubAdmin = (user) => ['manager', 'supervisor'].includes(user.position);
 
-function parseDueAt(value) {
-  if (!value) return null;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function normalizeStatus(value, fallback = 'todo') {
-  if (!value) return fallback;
-  return ALLOWED_STATUS.has(value) ? value : null;
-}
-
-function normalizePriority(value, fallback = 'medium') {
-  if (!value) return fallback;
-  return ALLOWED_PRIORITY.has(value) ? value : null;
-}
-
-function applyCompletedAt(task, nextStatus) {
-  if (nextStatus === 'completed') {
-    if (!task.completed_at) task.completed_at = new Date();
-  } else {
-    // لو رجّعها todo / in_progress → نشيل completed_at
-    task.completed_at = null;
-  }
-}
-
-function buildTaskWhereQuery(query) {
-  const where = {};
-  const { assigneeId, status, fromDate, toDate, q } = query;
-
-  if (assigneeId) where.assignee_id = Number(assigneeId);
-
-  if (status && status !== 'all') {
-    if (ALLOWED_STATUS.has(status)) where.status = status;
-  }
-
-  // فلترة بالـ due_at
-  if (fromDate || toDate) {
-    where.due_at = {};
-    if (fromDate) {
-      where.due_at[Op.gte] = new Date(`${fromDate}T00:00:00`);
-    }
-    if (toDate) {
-      where.due_at[Op.lte] = new Date(`${toDate}T23:59:59.999`);
-    }
-  }
-
-  if (q) {
-    where[Op.or] = [
-      { title: { [Op.like]: `%${q}%` } },
-      { description: { [Op.like]: `%${q}%` } },
-    ];
-  }
-
-  return where;
-}
+const getIo = (req) => req.app.get('io');
 
 const includeUsers = [
   {
@@ -75,247 +21,143 @@ const includeUsers = [
   },
 ];
 
-// ============== GET /api/tasks (Manager/Supervisor/Admin) ==============
-exports.getAllTasksForManager = async (req, res) => {
-  try {
-    const page = Math.max(1, Number(req.query.page || 1));
-    const pageSize = Math.min(200, Math.max(1, Number(req.query.pageSize || 50)));
-
-    const sortDir = String(req.query.sortDir || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
-
-    const sortByRaw = String(req.query.sortBy || 'due_at');
-    const sortMap = {
-      due_at: 'due_at',
-      status: 'status',
-      priority: 'priority',
-      id: 'id',
-      createdAt: 'createdAt',
-      updatedAt: 'updatedAt',
-      created_at: 'createdAt',
-      updated_at: 'updatedAt',
-    };
-    const sortBy = sortMap[sortByRaw] || 'due_at';
-
-    const where = buildTaskWhereQuery(req.query);
-
-    const limit = pageSize;
-    const offset = (page - 1) * limit;
-
-    const result = await Task.findAndCountAll({
-      where,
-      include: includeUsers,
-      order: [[sortBy, sortDir]],
-      limit,
-      offset,
-    });
-
-    return res.json({
-      rows: result.rows,
-      count: result.count,
-      page,
-      pageSize: limit,
-    });
-  } catch (error) {
-    console.error('getAllTasksForManager error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
-};
-
-// ============== GET /api/tasks/by-assignee/:id (Manager View) ==============
-exports.getTasksByAssignee = async (req, res) => {
-  try {
-    const assigneeId = Number(req.params.id);
-    if (Number.isNaN(assigneeId)) {
-      return res.status(400).json({ message: 'Invalid assignee id' });
-    }
-
-    const where = buildTaskWhereQuery(req.query);
-    where.assignee_id = assigneeId;
-
-    const tasks = await Task.findAll({
-      where,
-      include: includeUsers,
-      order: [['due_at', 'ASC'], ['id', 'ASC']],
-    });
-
-    return res.json(tasks);
-  } catch (error) {
-    console.error('getTasksByAssignee error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
-};
-
-// ============== GET /api/tasks/my/all (Board بتاع الـ user نفسه) ==============
-exports.getMyTasks = async (req, res) => {
+// ============== GET /api/tasks (List tasks based on role) ==============
+exports.getTasks = async (req, res) => {
   try {
     const user = req.user;
-    if (!user || (user.role !== 'operation' && user.role !== 'admin')) {
-      return res.status(403).json({ message: 'Operation staff only' });
+    let whereClause = {};
+
+    // If not admin/sub-admin, only see assigned tasks
+    if (!isTaskAdmin(user) && !isTaskSubAdmin(user)) {
+      whereClause = { assignee_id: user.id };
     }
 
-    const where = buildTaskWhereQuery(req.query);
-    where.assignee_id = user.id;
-
     const tasks = await Task.findAll({
-      where,
+      where: whereClause,
       include: includeUsers,
-      order: [['due_at', 'ASC'], ['id', 'ASC']],
+      order: [['createdAt', 'DESC']]
     });
-
-    return res.json(tasks);
-  } catch (error) {
-    console.error('getMyTasks error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    res.json(tasks);
+  } catch (err) {
+    console.error('getTasks error:', err.message);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 
-// ============== POST /api/tasks (create) ==============
+// ============== POST /api/tasks (Create - Admin/Sub-Admin only) ==============
 exports.createTask = async (req, res) => {
   try {
     const user = req.user;
-
-    if (!(user.role === 'admin' || isOperationManagerOrSupervisor(user))) {
-      return res.status(403).json({
-        message: 'Only operation manager/supervisor or admin can create tasks',
-      });
+    if (!isTaskAdmin(user) && !isTaskSubAdmin(user)) {
+      return res.status(403).json({ message: 'Unauthorized to create tasks' });
     }
 
-    const { assigneeId, title, description, dueAt, status, priority } = req.body;
-
-    if (!assigneeId) return res.status(400).json({ message: 'assigneeId is required' });
-    if (!title || !title.trim()) return res.status(400).json({ message: 'title is required' });
-
-    const assignee = await Auth.findByPk(assigneeId);
-    if (!assignee) return res.status(400).json({ message: 'Assignee not found' });
-    if (assignee.role !== 'operation') {
-      return res.status(400).json({ message: 'Assignee must be operation user' });
+    const { title, description, priority, due_at, assignee_id, attachment_link } = req.body;
+    
+    if (!title || !assignee_id) {
+      return res.status(400).json({ message: 'Title and Assignee are required' });
     }
-
-    const normalizedStatus = normalizeStatus(status, 'todo');
-    if (!normalizedStatus) return res.status(400).json({ message: 'Invalid status' });
-
-    const normalizedPriority = normalizePriority(priority, 'medium');
-    if (!normalizedPriority) return res.status(400).json({ message: 'Invalid priority' });
-
-    const dueVal = parseDueAt(dueAt);
 
     const task = await Task.create({
-      assignee_id: assigneeId,
-      created_by_id: user.id,
-      title: title.trim(),
-      description: description ?? null,
-      due_at: dueVal,
-      status: normalizedStatus,
-      priority: normalizedPriority,
-      completed_at: null,
+      title,
+      description,
+      priority: priority || 'medium',
+      due_at,
+      assignee_id,
+      attachment_link,
+      created_by_id: user.id
     });
 
-    applyCompletedAt(task, task.status);
-    await task.save();
+    // Create Notification for the assignee
+    const notif = await SystemNotification.create({
+      user_id: assignee_id,
+      message: `You have been assigned a new task: ${title}`,
+      type: priority === 'high' ? 'urgent' : 'info',
+      related_task_id: task.id
+    });
 
-    const full = await Task.findByPk(task.id, { include: includeUsers });
-    return res.status(201).json(full || task);
-  } catch (error) {
-    console.error('createTask error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    // Emit Socket event
+    const io = getIo(req);
+    if (io) {
+      io.to(`user_${assignee_id}`).emit('new_notification', notif);
+    }
+
+    const fullTask = await Task.findByPk(task.id, { include: includeUsers });
+    res.status(201).json(fullTask);
+  } catch (err) {
+    console.error('createTask error:', err.message);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 
-// ============== PATCH /api/tasks/:id (update) ==============
+// ============== PATCH /api/tasks/:id (Update) ==============
 exports.updateTask = async (req, res) => {
   try {
     const user = req.user;
-    const id = Number(req.params.id);
-    if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid task id' });
+    const id = req.params.id;
+    const { title, description, status, priority, due_at, assignee_id, attachment_link, delivery_note, rate } = req.body;
 
-    const task = await Task.findByPk(id);
-    if (!task) return res.status(404).json({ message: 'Task not found' });
+    let task = await Task.findByPk(id);
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
 
-    const isManager =
-      user && (user.role === 'admin' || isOperationManagerOrSupervisor(user));
-    const isAssignee = user && user.id === task.assignee_id;
+    const isAdmin = isTaskAdmin(user);
+    const isSubAdmin = isTaskSubAdmin(user);
+    const isAssignee = task.assignee_id === user.id;
 
-    if (!isManager && !isAssignee) {
+    if (!isAdmin && !isSubAdmin && !isAssignee) {
       return res.status(403).json({ message: 'Not allowed to update this task' });
     }
 
-    const {
-      title,
-      description,
-      dueAt,
-      assigneeId,
-      status,
-      priority,
-      // Backward compatibility لو كان فيه كود قديم:
-      markDone,
-    } = req.body;
+    const updateFields = {};
 
-    // ===== Assignee فقط: يغيّر status (todo/in_progress/completed) =====
-    if (!isManager && isAssignee) {
-      let nextStatus = null;
+    // Fields only Admin/Sub-Admin can change
+    if (isAdmin || isSubAdmin) {
+      if (title !== undefined) updateFields.title = title;
+      if (description !== undefined) updateFields.description = description;
+      if (priority !== undefined) updateFields.priority = priority;
+      if (due_at !== undefined) updateFields.due_at = due_at;
+      if (assignee_id !== undefined) updateFields.assignee_id = assignee_id;
+    }
 
-      if (typeof markDone !== 'undefined') {
-        nextStatus = markDone ? 'completed' : 'todo';
-      } else if (typeof status !== 'undefined') {
-        nextStatus = normalizeStatus(status, task.status);
-        if (!nextStatus) return res.status(400).json({ message: 'Invalid status' });
+    // Only Admin can rate
+    if (rate !== undefined && isAdmin) {
+      updateFields.rate = rate;
+    }
+
+    // Both user and admins can provide attachment links and delivery notes
+    if (attachment_link !== undefined) updateFields.attachment_link = attachment_link;
+    if (delivery_note !== undefined) updateFields.delivery_note = delivery_note;
+
+    // Status update (Notify creator if status changes)
+    if (status && status !== task.status) {
+      updateFields.status = status;
+      if (status === 'completed') {
+        updateFields.completed_at = new Date();
       } else {
-        return res.status(400).json({ message: 'status is required for assignee update' });
+        updateFields.completed_at = null;
       }
-
-      task.status = nextStatus;
-      applyCompletedAt(task, nextStatus);
-      await task.save();
-
-      const full = await Task.findByPk(task.id, { include: includeUsers });
-      return res.json(full || task);
-    }
-
-    // ===== Manager/Supervisor/Admin =====
-    if (typeof title !== 'undefined') {
-      if (title && title.trim()) task.title = title.trim();
-    }
-
-    if (typeof description !== 'undefined') {
-      task.description = description ?? null;
-    }
-
-    if (typeof dueAt !== 'undefined') {
-      task.due_at = parseDueAt(dueAt);
-    }
-
-    if (typeof priority !== 'undefined') {
-      const p = normalizePriority(priority, task.priority);
-      if (!p) return res.status(400).json({ message: 'Invalid priority' });
-      task.priority = p;
-    }
-
-    if (typeof status !== 'undefined') {
-      const s = normalizeStatus(status, task.status);
-      if (!s) return res.status(400).json({ message: 'Invalid status' });
-      task.status = s;
-      applyCompletedAt(task, s);
-    }
-
-    if (typeof assigneeId !== 'undefined') {
-      if (!assigneeId) {
-        return res.status(400).json({ message: 'assigneeId cannot be empty' });
+      
+      // Notify creator (unless they are the one updating)
+      if (task.created_by_id !== user.id) {
+        const notif = await SystemNotification.create({
+          user_id: task.created_by_id,
+          message: `Task "${task.title}" status changed to ${status}`,
+          type: 'info',
+          related_task_id: task.id
+        });
+        const io = getIo(req);
+        if (io) io.to(`user_${task.created_by_id}`).emit('new_notification', notif);
       }
-      const newAssignee = await Auth.findByPk(assigneeId);
-      if (!newAssignee) return res.status(400).json({ message: 'Assignee not found' });
-      if (newAssignee.role !== 'operation') {
-        return res.status(400).json({ message: 'Assignee must be operation user' });
-      }
-      task.assignee_id = assigneeId;
     }
 
-    await task.save();
-
-    const full = await Task.findByPk(task.id, { include: includeUsers });
-    return res.json(full || task);
-  } catch (error) {
-    console.error('updateTask error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    await task.update(updateFields);
+    const fullTask = await Task.findByPk(task.id, { include: includeUsers });
+    res.json(fullTask);
+  } catch (err) {
+    console.error('updateTask error:', err.message);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -323,23 +165,18 @@ exports.updateTask = async (req, res) => {
 exports.deleteTask = async (req, res) => {
   try {
     const user = req.user;
-
-    if (!(user && (user.role === 'admin' || isOperationManagerOrSupervisor(user)))) {
-      return res.status(403).json({
-        message: 'Only operation manager/supervisor or admin can delete tasks',
-      });
+    if (!isTaskAdmin(user) && !isTaskSubAdmin(user)) {
+      return res.status(403).json({ message: 'Unauthorized to delete tasks' });
     }
 
-    const id = Number(req.params.id);
-    if (Number.is (Number.isNaN(id))) return res.status(400).json({ message: 'Invalid task id' });
-
-    const task = await Task.findByPk(id);
-    if (!task) return res.status(404).json({ message: 'Task not found' });
-
+    let task = await Task.findByPk(req.params.id);
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
     await task.destroy();
-    return res.status(204).send();
-  } catch (error) {
-    console.error('deleteTask error:', error);
-    return res.status(500).json({ message: 'Internal server error' });
+    res.json({ message: 'Task removed' });
+  } catch (err) {
+    console.error('deleteTask error:', err.message);
+    res.status(500).json({ message: 'Server error' });
   }
 };

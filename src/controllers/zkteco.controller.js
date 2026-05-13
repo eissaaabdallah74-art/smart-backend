@@ -129,3 +129,111 @@ exports.getDeviceUsers = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+exports.pushUserToDevice = async (req, res) => {
+  try {
+    const result = await attendanceSyncService.pushUserToDevice(req.params.id, req.body);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.deleteUserFromDevice = async (req, res) => {
+  try {
+    const result = await attendanceSyncService.deleteUserFromDevice(req.params.id, req.params.uid);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.deleteRawLog = async (req, res) => {
+  try {
+    const { AttendanceRawLog } = require("../models");
+    const log = await AttendanceRawLog.findByPk(req.params.id);
+    if (!log) return res.status(404).json({ success: false, error: 'Log not found' });
+    
+    await log.destroy();
+    res.json({ success: true, message: 'Log deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.updateLog = async (req, res) => {
+  try {
+    const { AttendanceRawLog } = require("../models");
+    const log = await AttendanceRawLog.findByPk(req.params.id);
+    if (!log) return res.status(404).json({ success: false, error: 'Log not found' });
+    
+    await log.update(req.body);
+    res.json({ success: true, data: log });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// --- Mapping Actions ---
+exports.createMapping = async (req, res) => {
+  try {
+    const { EmployeeDeviceMapping } = require("../models");
+    const mapping = await EmployeeDeviceMapping.create(req.body);
+    res.status(201).json({ success: true, data: mapping });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+};
+
+exports.getMappings = async (req, res) => {
+  try {
+    const { EmployeeDeviceMapping, Employee, AttendanceDevice } = require("../models");
+    const mappings = await EmployeeDeviceMapping.findAll({
+      include: [
+        { model: Employee, as: 'employee', attributes: ['fullName', 'nationalId'] },
+        { model: AttendanceDevice, as: 'device', attributes: ['name'] }
+      ]
+    });
+    res.json({ success: true, data: mappings });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.deleteMapping = async (req, res) => {
+  try {
+    const { EmployeeDeviceMapping } = require("../models");
+    const mapping = await EmployeeDeviceMapping.findByPk(req.params.id);
+    if (!mapping) return res.status(404).json({ success: false, error: 'Mapping not found' });
+    
+    await mapping.destroy();
+    res.json({ success: true, message: 'Mapping deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.getUnmappedUsers = async (req, res) => {
+  try {
+    const { AttendanceDeviceUser, EmployeeDeviceMapping } = require("../models");
+    const { Op } = require("sequelize");
+
+    // Get all users who are NOT in mappings
+    const mappings = await EmployeeDeviceMapping.findAll({ attributes: ['attendanceDeviceId', 'deviceUserId'] });
+    
+    // Create a composite key for exclusion
+    const excludedKeys = mappings.map(m => `${m.attendanceDeviceId}-${m.deviceUserId}`);
+
+    const allUsers = await AttendanceDeviceUser.findAll({
+      include: [
+        { model: require("../models").AttendanceDevice, as: 'device', attributes: ['name'] }
+      ]
+    });
+
+    const unmapped = allUsers.filter(u => !excludedKeys.includes(`${u.attendanceDeviceId}-${u.deviceUserId}`));
+
+    res.json({ success: true, data: unmapped });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};

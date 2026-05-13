@@ -23,7 +23,9 @@ module.exports = (sequelize, DataTypes) => {
           'account_manager_target',
           'account_manager_day1',
           'interviewer_recruitment',
-          'manual'
+          'manual',
+          'operation_team_target',
+          'supply_chain_team_target'
         ),
         allowNull: false,
         field: 'calculation_type',

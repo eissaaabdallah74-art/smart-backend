@@ -29,7 +29,6 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
 
-      // مطابق للـ Front: due_at (datetime)
       due_at: {
         type: DataTypes.DATE,
         allowNull: true,
@@ -40,19 +39,32 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
 
-      // مطابق للـ Front: status (todo/in_progress/completed)
       status: {
-        type: DataTypes.ENUM('todo', 'in_progress', 'completed'),
+        type: DataTypes.ENUM('pending', 'in_progress', 'completed'),
         allowNull: false,
-        defaultValue: 'todo',
+        defaultValue: 'pending',
       },
 
-      // مطابق للـ Front: priority (low/medium/high)
       priority: {
         type: DataTypes.ENUM('low', 'medium', 'high'),
         allowNull: false,
         defaultValue: 'medium',
       },
+
+      attachment_link: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+      },
+
+      delivery_note: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
+
+      rate: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      }
     },
     {
       tableName: 'tasks',
@@ -63,3 +75,4 @@ module.exports = (sequelize, DataTypes) => {
 
   return Task;
 };
+

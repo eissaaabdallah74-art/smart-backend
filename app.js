@@ -2,6 +2,7 @@
 const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
+const path = require("path");
 
 const authMiddleware = require("./src/middlewares/auth.middleware");
 const auditContextMiddleware = require("./src/middlewares/audit-context.middleware");
@@ -39,6 +40,8 @@ const vehicleTypeRoutes = require("./src/routes/vehicle-type.routes");
 const businessModuleRoutes = require("./src/routes/business-module.routes");
 const kpiRoutes = require("./src/routes/kpi.routes");
 const zktecoRoutes = require("./src/routes/zkteco.routes");
+const systemNotificationRoutes = require("./src/routes/system-notification.routes");
+const chatRoutes = require("./src/routes/chat.routes");
 const app = express();
 
 console.log("✅ APP BOOT PID:", process.pid);
@@ -66,7 +69,6 @@ app.get("/", (_req, res) => {
 });
 
 // ===== Public =====
-app.use("/api/kpi", kpiRoutes);
 app.use("/api/zkteco", zktecoRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/couriers", courierRegistrationRoutes);
@@ -159,6 +161,9 @@ app.use("/api/vehicle-types", authMiddleware, auditContextMiddleware, vehicleTyp
 app.use("/api/business-modules", authMiddleware, auditContextMiddleware, businessModuleRoutes);
 app.use("/api/client-modules", authMiddleware, auditContextMiddleware, require("./src/routes/client-module.routes"));
 app.use("/api/system-aliases", require("./src/routes/system-alias.routes"));
+app.use("/api/system-notifications", systemNotificationRoutes);
+app.use("/api/chat", chatRoutes);
+app.use("/api/hr/payroll", authMiddleware, auditContextMiddleware, payrollRoutes);
 
 // ✅ WhatsApp Module
 app.use("/api/whatsapp", authMiddleware, auditContextMiddleware, require("./src/routes/whatsapp.routes"));
@@ -172,7 +177,6 @@ const landingPageSettingsRoutes = require("./src/routes/landing-page-settings.ro
 app.use("/api/landing-page-settings", landingPageSettingsRoutes);
 
 // ✅ Serve Static Uploads
-const path = require("path");
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ===== 404 JSON fallback (لازم يكون آخر حاجة بعد كل routes) =====
@@ -204,7 +208,29 @@ app.use((err, req, res, _next) => {
     await db.sequelize.authenticate();
     console.log("✅ Database connection has been established successfully.");
 
-    await db.sequelize.sync({ alter: true });
+    await db.sequelize.sync();
+    try {
+      await db.sequelize.query("ALTER TABLE `driver_attendances` ADD COLUMN `approval_status` VARCHAR(255) NOT NULL DEFAULT 'pending';");
+      console.log("✅ Column approval_status added via native SQL query successfully.");
+    } catch (colErr) {
+      console.log("ℹ️ Column approval_status check output:", colErr.message);
+    }
+    const alterQueries = [
+      "ALTER TABLE `employee_payroll_settings` ADD COLUMN `payrollMode` VARCHAR(255) DEFAULT 'NO_EXEMPT_ALLOWANCES';",
+      "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowanceEnabled` TINYINT(1) DEFAULT 0;",
+      "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowancePercentage` FLOAT DEFAULT 30;",
+      "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowanceCalculationMethod` VARCHAR(255) DEFAULT 'PERCENTAGE_OF_BASIC';",
+      "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowanceTaxTreatment` VARCHAR(255) DEFAULT 'TAXABLE';",
+      "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowanceSocialInsuranceTreatment` VARCHAR(255) DEFAULT 'EXCLUDED_FROM_SOCIAL_INSURANCE';"
+    ];
+    for (const q of alterQueries) {
+      try {
+        await db.sequelize.query(q);
+      } catch (e) {
+        // Ignore duplicate column errors individually
+      }
+    }
+    console.log("✅ Columns migration check for employee_payroll_settings completed.");
     await require("./src/seed/company-documents.seed")();
     await require("./src/seed/finance.seed")();
     await require("./src/seed/vehicle-type.seed")();

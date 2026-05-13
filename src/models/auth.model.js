@@ -85,6 +85,17 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: 'access_expires_at',
       },
+      profileImage: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+        field: 'profile_image',
+      },
+      weekendPolicy: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        field: 'weekend_policy',
+        comment: 'Custom weekend policy for this user (e.g., how many Saturdays off)',
+      },
     },
     {
       tableName: 'auth_users',

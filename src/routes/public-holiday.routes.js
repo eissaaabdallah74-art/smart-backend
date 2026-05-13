@@ -7,6 +7,8 @@ const { requireHRorAdmin } = require("../middlewares/role.helpers");
 
 // All routes require HR or Admin
 router.get("/", authMiddleware, requireHRorAdmin, controller.listHolidays);
+router.get("/weekend", authMiddleware, requireHRorAdmin, controller.getWeekendSettings);
+router.post("/weekend", authMiddleware, requireHRorAdmin, controller.updateWeekendSettings);
 router.post("/", authMiddleware, requireHRorAdmin, controller.createHoliday);
 router.delete("/:id", authMiddleware, requireHRorAdmin, controller.deleteHoliday);
 

@@ -1,5 +1,5 @@
 // src/services/zkteco-client.service.js
-const ZKLib = require("node-zklib");
+const ZKLib = require("zkh-lib");
 
 class ZktecoClientService {
   constructor(ipAddress, port = 4370, timeout = 10000, inport = 5200) {
@@ -59,6 +59,24 @@ class ZktecoClientService {
       return info;
     } catch (error) {
       return null;
+    }
+  }
+
+  async setUser(uid, userId, name, password = "", role = 0, cardno = 0) {
+    try {
+      if (!this.zkInstance) throw new Error("Device not connected");
+      return await this.zkInstance.setUser(uid, userId, name, password, role, cardno);
+    } catch (error) {
+      throw new Error(`Failed to set user: ${error.message}`);
+    }
+  }
+
+  async deleteUser(uid) {
+    try {
+      if (!this.zkInstance) throw new Error("Device not connected");
+      return await this.zkInstance.deleteUser(uid);
+    } catch (error) {
+      throw new Error(`Failed to delete user: ${error.message}`);
     }
   }
 }

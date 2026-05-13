@@ -1,4 +1,4 @@
-const { Driver, DriverLoan, Vendor, AuditLog, PendingRequest, PendingRequestItem, Client, Hub, Zone, Payroll, sequelize } = require('../models');
+const { Driver, DriverAttendance, DriverLoan, Vendor, AuditLog, PendingRequest, PendingRequestItem, Client, Hub, Zone, Payroll, sequelize } = require('../models');
 const { backfillDriversFromInterviews } = require('../services/driver-sync.service');
 
 const driverWritableFields = [
@@ -582,6 +582,116 @@ exports.toggleBlacklist = async (req, res) => {
     return res.json(driver);
   } catch (error) {
     console.error('toggleBlacklist error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// GET /api/drivers/attendance/daily
+exports.getDriverAttendances = async (req, res) => {
+  try {
+    const { month, year, clientName } = req.query;
+    const { Op } = require('sequelize');
+
+    const whereClause = {};
+    if (month && year) {
+      const mNum = Number(month);
+      const yNum = Number(year);
+      if (!Number.isNaN(mNum) && !Number.isNaN(yNum)) {
+        const startDate = new Date(yNum, mNum - 1, 1);
+        const endDate = new Date(yNum, mNum, 0);
+        whereClause.date = {
+          [Op.between]: [
+            startDate.toISOString().split('T')[0],
+            endDate.toISOString().split('T')[0],
+          ],
+        };
+      }
+    }
+
+    const driverWhere = {};
+    let includeRequired = false;
+    if (clientName) {
+      driverWhere.clientName = clientName;
+      includeRequired = true;
+    }
+
+    const attendances = await DriverAttendance.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: Driver,
+          as: 'driver',
+          attributes: ['id', 'name', 'courierPhone', 'clientName', 'hub', 'area', 'vehicleType'],
+          where: driverWhere,
+          required: includeRequired,
+        },
+      ],
+      order: [['date', 'DESC']],
+    });
+
+    return res.json({ success: true, attendances });
+  } catch (error) {
+    console.error('getDriverAttendances error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// PATCH /api/drivers/attendance/:id/approval
+exports.updateAttendanceApproval = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid attendance id' });
+    }
+
+    const { approvalStatus } = req.body;
+    if (!['pending', 'approved', 'rejected'].includes(approvalStatus)) {
+      return res.status(400).json({ message: 'Invalid approval status value' });
+    }
+
+    const attendance = await DriverAttendance.findByPk(id, {
+      include: [
+        {
+          model: Driver,
+          as: 'driver',
+          attributes: ['id', 'name', 'courierPhone', 'clientName', 'hub', 'area', 'vehicleType'],
+        },
+      ],
+    });
+
+    if (!attendance) {
+      return res.status(404).json({ message: 'Attendance record not found' });
+    }
+
+    attendance.approvalStatus = approvalStatus;
+    await attendance.save({ audit: req.audit });
+
+    return res.json({ success: true, attendance });
+  } catch (error) {
+    console.error('updateAttendanceApproval error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// PATCH /api/drivers/attendance/bulk-status
+exports.bulkUpdateAttendanceStatus = async (req, res) => {
+  try {
+    const { ids, status } = req.body;
+    if (!Array.isArray(ids) || !ids.length) {
+      return res.status(400).json({ message: 'Array of attendance ids is required' });
+    }
+    if (!['present', 'absent'].includes(status)) {
+      return res.status(400).json({ message: 'Valid status (present/absent) is required' });
+    }
+
+    await DriverAttendance.update(
+      { status },
+      { where: { id: ids } }
+    );
+
+    return res.json({ success: true, updatedCount: ids.length });
+  } catch (error) {
+    console.error('bulkUpdateAttendanceStatus error:', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };

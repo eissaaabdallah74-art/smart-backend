@@ -334,6 +334,90 @@ exports.getPayrollBreakdowns = async (req, res) => {
     }
 };
 
+exports.getAttendance = async (req, res) => {
+    try {
+        const { month, year } = req.query; // optional, filter by month/year
+        
+        let whereClause = { driverId: req.driver.id };
+        if (month && year) {
+            const startDate = new Date(year, month - 1, 1);
+            const endDate = new Date(year, month, 0); // last day of month
+            whereClause.date = {
+                [Op.between]: [startDate.toISOString().split('T')[0], endDate.toISOString().split('T')[0]]
+            };
+        }
+
+        const attendances = await db.DriverAttendance.findAll({
+            where: whereClause,
+            order: [['date', 'DESC']]
+        });
+        
+        res.json({ success: true, attendances });
+    } catch (err) {
+        console.error("getAttendance Error:", err);
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
+exports.checkIn = async (req, res) => {
+    try {
+        const { locationIn, notes } = req.body;
+        const today = new Date();
+        const dateStr = today.toISOString().split('T')[0];
+
+        let record = await db.DriverAttendance.findOne({
+            where: { driverId: req.driver.id, date: dateStr }
+        });
+
+        if (record) {
+            return res.status(400).json({ message: "تم تسجيل الحضور اليوم مسبقاً." });
+        }
+
+        record = await db.DriverAttendance.create({
+            driverId: req.driver.id,
+            date: dateStr,
+            checkIn: today,
+            locationIn,
+            notes,
+            status: 'present'
+        });
+
+        res.json({ success: true, message: "تم تسجيل الحضور بنجاح", record });
+    } catch (err) {
+        console.error("checkIn Error:", err);
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
+exports.checkOut = async (req, res) => {
+    try {
+        const { locationOut } = req.body;
+        const today = new Date();
+        const dateStr = today.toISOString().split('T')[0];
+
+        const record = await db.DriverAttendance.findOne({
+            where: { driverId: req.driver.id, date: dateStr }
+        });
+
+        if (!record) {
+            return res.status(400).json({ message: "لم يتم العثور على تسجيل حضور اليوم." });
+        }
+        
+        if (record.checkOut) {
+            return res.status(400).json({ message: "تم تسجيل الانصراف اليوم مسبقاً." });
+        }
+
+        record.checkOut = today;
+        record.locationOut = locationOut;
+        await record.save();
+
+        res.json({ success: true, message: "تم تسجيل الانصراف بنجاح", record });
+    } catch (err) {
+        console.error("checkOut Error:", err);
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
 exports.getNotifications = async (req, res) => {
     try {
         const notifications = await db.DriverNotification.findAll({

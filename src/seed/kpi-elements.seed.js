@@ -3,17 +3,17 @@ const { KpiElement } = require('../models');
 
 const kpiElementsData = [
   {
-    nameAr: 'التارجت (Account Manager)',
-    nameEn: 'Target (Account Manager)',
+    nameAr: 'التارجت (Target)',
+    nameEn: 'Target',
     calculationType: 'account_manager_target',
   },
   {
-    nameAr: 'أكتيف أول يوم (Day 1 Active)',
+    nameAr: 'أكتيف أول يوم (Day 1)',
     nameEn: 'Day 1 Active',
     calculationType: 'account_manager_day1',
   },
   {
-    nameAr: 'التعيين (Recruitment)',
+    nameAr: 'التعيينات (Recruitment)',
     nameEn: 'Recruitment',
     calculationType: 'interviewer_recruitment',
   },

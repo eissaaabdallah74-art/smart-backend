@@ -294,6 +294,7 @@ exports.createUser = async (req, res) => {
       employeeId, // NEW
       managerId, // NEW hierarchy
       interviewTarget, // NEW target
+      weekendPolicy, // NEW
     } = req.body;
 
     if (!fullName || !email || !password) {
@@ -324,6 +325,7 @@ exports.createUser = async (req, res) => {
         interviewTarget: interviewTarget || 0,
         hireDate: hireDate || new Date(),
         creationDate: new Date(),
+        weekendPolicy: weekendPolicy || null,
       },
       { transaction: t }
     );
@@ -389,6 +391,7 @@ exports.updateUser = async (req, res) => {
       employeeId, // NEW
       managerId,
       interviewTarget,
+      weekendPolicy,
     } = req.body;
 
     const authUser = await Auth.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
@@ -415,6 +418,7 @@ exports.updateUser = async (req, res) => {
     if (typeof hireDate !== "undefined") authUser.hireDate = hireDate;
     if (typeof managerId !== "undefined") authUser.managerId = managerId || null;
     if (typeof interviewTarget !== "undefined") authUser.interviewTarget = interviewTarget;
+    if (typeof weekendPolicy !== "undefined") authUser.weekendPolicy = weekendPolicy || null;
     if (typeof terminationDate !== "undefined")
       authUser.terminationDate = terminationDate;
 
@@ -600,76 +604,157 @@ exports.getUserPerformance = async (req, res) => {
     const id = Number(req.params.id);
     if (Number.isNaN(id)) return res.status(400).json({ message: "Invalid id" });
 
+    const { month, year } = req.query;
+    let dateFilter = {};
+    if (month && year) {
+      const startDate = new Date(year, month - 1, 1);
+      const endDate = new Date(year, month, 0, 23, 59, 59);
+      dateFilter = {
+        createdAt: { [Op.between]: [startDate, endDate] }
+      };
+    }
+
     // Explicit recursive fetch up to 4 levels (Manager -> Subordinates)
-    const { Interview } = require('../models');
+    const db = require('../models');
+    const { Auth, Interview } = db;
 
     const getAuthAttributes = () => ['id', 'fullName', 'position', 'interviewTarget', 'role'];
 
-    const getManagedInterviewsInclude = () => ({
+    const getRecruitmentInclude = () => ({
       model: Interview,
       as: 'managedInterviews',
-      where: { hr_feedback: 'signed' },
+      where: { 
+        signedWithHr: 'Signed A Contract With HR',
+        ...dateFilter
+      },
+      required: false,
+      attributes: ['id']
+    });
+
+    const getDay1Include = () => ({
+      model: Interview,
+      as: 'day1Interviews',
+      where: { 
+        courierStatus: 'Active Day 1',
+        ...dateFilter
+      },
       required: false,
       attributes: ['id']
     });
 
     const buildLevel = (depth) => {
       if (depth === 0) return null;
-      return {
+      const level = {
         attributes: getAuthAttributes(),
         model: Auth,
         as: 'subordinates',
         required: false,
         include: [
-           getManagedInterviewsInclude(),
-           buildLevel(depth - 1)
-        ].filter(Boolean)
+           getRecruitmentInclude(),
+           getDay1Include()
+        ]
       };
+      
+      const nextLevel = buildLevel(depth - 1);
+      if (nextLevel) {
+        level.include.push(nextLevel);
+      }
+      return level;
     };
 
     const userTree = await Auth.findByPk(id, {
       attributes: getAuthAttributes(),
       include: [
-         getManagedInterviewsInclude(),
-         buildLevel(3) // 3 levels under the requested user is sufficient for 4-level hierarchy
+         getRecruitmentInclude(),
+         getDay1Include(),
+         buildLevel(3)
       ].filter(Boolean)
     });
 
     if (!userTree) return res.status(404).json({ message: "User not found" });
 
     // Post-process tree into metrics
-    const calculateMetrics = (node) => {
-      let totalTarget = node.interviewTarget || 0;
-      let totalAchieved = node.managedInterviews ? node.managedInterviews.length : 0;
-      const downline = [];
+    // Post-process tree into metrics
+    const kpiService = require('../services/kpi.service');
 
+    const calculateMetrics = async (node) => {
+      // Get FULL KPI calculation for THIS node
+      const kpiReport = await kpiService.calculateMonthlyKpi(node.id, parseInt(month), parseInt(year));
+      
+      const downline = [];
       if (node.subordinates && node.subordinates.length > 0) {
-        node.subordinates.forEach(sub => {
-          const subMetrics = calculateMetrics(sub);
-          totalTarget += subMetrics.totalTarget;
-          totalAchieved += subMetrics.totalAchieved;
+        for (const sub of node.subordinates) {
+          const subMetrics = await calculateMetrics(sub);
           downline.push(subMetrics);
-        });
+        }
       }
+
+      const targetEl = kpiReport.elements.find(e => e.calculationType === 'account_manager_target');
+      const recEl = kpiReport.elements.find(e => e.calculationType === 'recruitment' || e.calculationType === 'interviewer_recruitment');
+      const day1El = kpiReport.elements.find(e => e.calculationType === 'day1' || e.calculationType === 'account_manager_day1');
 
       return {
         id: node.id,
         fullName: node.fullName,
         position: node.position,
         role: node.role,
-        personalTarget: node.interviewTarget || 0,
-        personalAchieved: node.managedInterviews ? node.managedInterviews.length : 0,
-        totalTarget,
-        totalAchieved,
+        // Detailed breakdown
+        targetTarget: targetEl?.targetValue || 0,
+        targetAchieved: targetEl?.achievedValue || 0,
+        recruitmentTarget: recEl?.targetValue || 0,
+        recruitmentAchieved: recEl?.achievedValue || 0,
+        day1Target: day1El?.targetValue || 0,
+        day1Achieved: day1El?.achievedValue || 0,
+        // Compatibility
+        totalTarget: (targetEl?.targetValue || 0) + (recEl?.targetValue || 0) + (day1El?.targetValue || 0),
+        totalAchieved: (targetEl?.achievedValue || 0) + (recEl?.achievedValue || 0) + (day1El?.achievedValue || 0),
+        kpiReport, 
         subordinates: downline
       };
+
     };
 
-    const metrics = calculateMetrics(userTree);
+    const metrics = await calculateMetrics(userTree);
     return res.json(metrics);
 
   } catch (error) {
     console.error("getUserPerformance error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// ================== Profile: Self Update ==================
+exports.updateMyProfile = async (req, res) => {
+  try {
+    const authId = req.user.id;
+    const { fullName, password, profileImage } = req.body;
+
+    const user = await Auth.findByPk(authId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (fullName) user.fullName = fullName;
+    
+    if (req.file) {
+      // Save path as URL (assuming /uploads is served statically)
+      const baseUrl = req.protocol + '://' + req.get('host');
+      user.profileImage = `${baseUrl}/uploads/profiles/${req.file.filename}`;
+    } else if (profileImage !== undefined) {
+      // Fallback for direct URL update if needed (though usually we'll use file upload now)
+      user.profileImage = profileImage;
+    }
+
+    if (password && password.trim() !== "") {
+      const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+      user.password = hashedPassword;
+    }
+
+    await user.save();
+    
+    // Return updated user data (excluding password)
+    const payload = buildAuthResponse(user);
+    return res.json(payload);
+  } catch (error) {
+    console.error("updateMyProfile error:", error);
     return res.status(500).json({ message: "Internal server error" });
   }
 };

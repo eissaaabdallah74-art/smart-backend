@@ -7,6 +7,23 @@ const authMiddleware = require("../middlewares/auth.middleware");
 const {
   requireOperationManagerOrSupervisor,
 } = require("../middlewares/role.helpers");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+
+// Multer Config for Profile Images
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = "uploads/profiles";
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, "profile-" + uniqueSuffix + path.extname(file.originalname));
+  },
+});
+const upload = multer({ storage });
 
 // Middleware بسيط للـ admin فقط
 function requireAdmin(req, res, next) {
@@ -21,6 +38,9 @@ router.post("/login", authController.login);
 
 // GET /api/auth/me (Moved to top for priority)
 router.get("/me", authMiddleware, authController.getMe);
+
+// PUT /api/auth/profile
+router.put("/profile", authMiddleware, upload.single("profileImage"), authController.updateMyProfile);
 
 // ===== Admin: CRUD Accounts =====
 // كل اللي تحت هنا محتاج token + admin

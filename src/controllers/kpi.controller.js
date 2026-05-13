@@ -66,3 +66,34 @@ exports.calculateMonthlyKpi = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.updateKpiElement = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { nameAr, nameEn, isActive } = req.body;
+    const updated = await kpiService.updateKpiElement(id, { nameAr, nameEn, isActive });
+    res.status(200).json({ success: true, data: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.createKpiElement = async (req, res, next) => {
+  try {
+    const { nameAr, nameEn, calculationType, isActive } = req.body;
+    const element = await kpiService.createKpiElement({ nameAr, nameEn, calculationType, isActive });
+    res.status(201).json({ success: true, data: element });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.deleteKpiElement = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    await kpiService.deleteKpiElement(id);
+    res.status(200).json({ success: true, message: 'KPI Element deleted' });
+  } catch (error) {
+    next(error);
+  }
+};

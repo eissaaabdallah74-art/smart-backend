@@ -19,6 +19,15 @@ router.post('/sync-from-interviews', driverController.syncDriversFromInterviews)
 // POST /api/drivers/bulk
 router.post('/bulk', driverController.bulkUpsertDrivers);
 
+// GET /api/drivers/attendance/daily
+router.get('/attendance/daily', driverController.getDriverAttendances);
+
+// PATCH /api/drivers/attendance/bulk-status
+router.patch('/attendance/bulk-status', driverController.bulkUpdateAttendanceStatus);
+
+// PATCH /api/drivers/attendance/:id/approval
+router.patch('/attendance/:id/approval', driverController.updateAttendanceApproval);
+
 // GET /api/drivers/:id
 router.get('/:id', driverController.getDriverById);
 
