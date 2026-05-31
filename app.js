@@ -155,7 +155,8 @@ app.use("/api/finance/payrolls", authMiddleware, auditContextMiddleware, payroll
 app.use("/api/finance/breakdowns", authMiddleware, auditContextMiddleware, require("./src/routes/breakdown.routes"));
 app.use("/api/driver-financial-requests", require("./src/routes/driver-financial-request.routes"));
 app.use("/api/driver-notifications", authMiddleware, auditContextMiddleware, require("./src/routes/driver-notification.routes"));
-app.use("/api/chatbot", authMiddleware, auditContextMiddleware, chatbotRoutes);
+const { chatbotRateLimiter } = require("./src/middlewares/rate-limit.middleware");
+app.use("/api/chatbot", authMiddleware, auditContextMiddleware, chatbotRateLimiter, chatbotRoutes);
 app.use("/api/admin-management", authMiddleware, auditContextMiddleware, adminManagementRoutes);
 app.use("/api/vehicle-types", authMiddleware, auditContextMiddleware, vehicleTypeRoutes);
 app.use("/api/business-modules", authMiddleware, auditContextMiddleware, businessModuleRoutes);

@@ -2,7 +2,14 @@
 const jwt = require("jsonwebtoken");
 const db = require("../models");
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-key";
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET && process.env.NODE_ENV === 'production') {
+  console.error("FATAL ERROR: JWT_SECRET is not defined in production.");
+  process.exit(1);
+}
+
+const EFFECTIVE_SECRET = JWT_SECRET || "dev-secret-key";
 
 module.exports = async function authMiddleware(req, res, next) {
   try {
@@ -15,7 +22,7 @@ module.exports = async function authMiddleware(req, res, next) {
 
     let decoded;
     try {
-      decoded = jwt.verify(token, JWT_SECRET);
+      decoded = jwt.verify(token, EFFECTIVE_SECRET);
     } catch {
       return res.status(401).json({ message: "Unauthorized" });
     }

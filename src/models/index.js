@@ -39,6 +39,7 @@ db.DriverAttendance = require("./driver-attendance.model")(sequelize, DataTypes)
 
 // ===================== Audit Logs =====================
 db.AuditLog = require("./audit-log.model")(sequelize, DataTypes);
+db.AIUsageLog = require("./ai-usage-log.model")(sequelize, DataTypes);
 
 // ===================== Attendance Module =====================
 db.EmployeeAttendanceProfile = require("./employee-attendance-profile.model")(
@@ -582,6 +583,12 @@ db.Auth.hasMany(db.LoanRequest, {
 // AuditLog ↔ Auth
 db.AuditLog.belongsTo(db.Auth, { foreignKey: "actorId", as: "actor" });
 db.Auth.hasMany(db.AuditLog, { foreignKey: "actorId", as: "auditLogs" });
+
+// AIUsageLog ↔ Auth & Employee
+db.AIUsageLog.belongsTo(db.Auth, { foreignKey: "authUserId", as: "user" });
+db.Auth.hasMany(db.AIUsageLog, { foreignKey: "authUserId", as: "aiUsageLogs" });
+db.AIUsageLog.belongsTo(db.Employee, { foreignKey: "employeeId", as: "employee" });
+db.Employee.hasMany(db.AIUsageLog, { foreignKey: "employeeId", as: "aiUsageLogs" });
 
 // Driver created/updated/deleted by
 db.Driver.belongsTo(db.Auth, { foreignKey: "created_by_id", as: "createdBy" });
