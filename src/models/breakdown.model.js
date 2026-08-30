@@ -27,6 +27,12 @@ module.exports = (sequelize, DataTypes) => {
             allowNull: false,
             defaultValue: false,
             field: 'is_locked'
+        },
+        status: {
+            type: DataTypes.ENUM('pending_am', 'pending_supervisor', 'pending_manager', 'pending_finance', 'locked'),
+            allowNull: false,
+            defaultValue: 'pending_am',
+            field: 'status'
         }
     }, {
         tableName: 'breakdowns',

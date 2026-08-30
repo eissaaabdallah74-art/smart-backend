@@ -123,10 +123,12 @@ exports.createClient = async (req, res) => {
 
       contractDate,
       contractTerminationDate,
+      isOrderLog,
       isActive,
       company,
       companyCode,
       color,
+      clearancePeriodDays,
     } = req.body;
 
     if (!name) {
@@ -161,10 +163,12 @@ exports.createClient = async (req, res) => {
 
       contractDate,
       contractTerminationDate,
+      isOrderLog: typeof isOrderLog === 'boolean' ? isOrderLog : false,
       isActive: typeof isActive === 'boolean' ? isActive : true,
       company: normalizeCompany(company),
       companyCode: normalizeCompanyCode(companyCode),
       color: color || '#4f46e5',
+      clearancePeriodDays: clearancePeriodDays !== undefined ? Number(clearancePeriodDays) : 30,
     });
 
     return res.status(201).json(newClient);
@@ -213,10 +217,12 @@ exports.updateClient = async (req, res) => {
 
       contractDate,
       contractTerminationDate,
+      isOrderLog,
       isActive,
       company,
       companyCode,
       color,
+      clearancePeriodDays,
     } = req.body;
 
     if (typeof name !== 'undefined') client.name = name;
@@ -239,6 +245,7 @@ exports.updateClient = async (req, res) => {
     if (typeof contractDate !== 'undefined') client.contractDate = contractDate;
     if (typeof contractTerminationDate !== 'undefined')
       client.contractTerminationDate = contractTerminationDate;
+    if (typeof isOrderLog !== 'undefined') client.isOrderLog = isOrderLog;
     if (typeof isActive !== 'undefined') client.isActive = isActive;
     if (typeof company !== 'undefined')
       client.company = normalizeCompany(company);
@@ -246,6 +253,8 @@ exports.updateClient = async (req, res) => {
       client.companyCode = normalizeCompanyCode(companyCode);
     if (typeof color !== 'undefined')
       client.color = color;
+    if (typeof clearancePeriodDays !== 'undefined')
+      client.clearancePeriodDays = Number(clearancePeriodDays) || 30;
 
     await client.save();
 
@@ -330,10 +339,12 @@ exports.bulkImportClients = async (req, res) => {
 
           contractDate,
           contractTerminationDate,
+          isOrderLog,
           isActive,
           company,
           companyCode,
           color,
+          clearancePeriodDays,
         } = raw;
 
         if (!name || String(name).trim() === '') {
@@ -379,6 +390,7 @@ exports.bulkImportClients = async (req, res) => {
             client.contractDate = contractDate;
           if (typeof contractTerminationDate !== 'undefined')
             client.contractTerminationDate = contractTerminationDate;
+          if (typeof isOrderLog !== 'undefined') client.isOrderLog = isOrderLog;
           if (typeof isActive !== 'undefined') client.isActive = isActive;
           if (typeof company !== 'undefined')
             client.company = normalizeCompany(company);
@@ -386,6 +398,8 @@ exports.bulkImportClients = async (req, res) => {
             client.companyCode = normalizeCompanyCode(companyCode);
           if (typeof color !== 'undefined')
             client.color = color;
+          if (typeof clearancePeriodDays !== 'undefined')
+            client.clearancePeriodDays = Number(clearancePeriodDays) || 30;
 
           await client.save({ transaction: t });
           updated.push(client.id);
@@ -404,10 +418,12 @@ exports.bulkImportClients = async (req, res) => {
 
               contractDate,
               contractTerminationDate,
+              isOrderLog: typeof isOrderLog === 'boolean' ? isOrderLog : false,
               isActive: typeof isActive === 'boolean' ? isActive : true,
               company: normalizeCompany(company),
               companyCode: normalizeCompanyCode(companyCode),
               color: color || '#4f46e5',
+              clearancePeriodDays: clearancePeriodDays !== undefined ? Number(clearancePeriodDays) : 30,
             },
             { transaction: t }
           );

@@ -39,9 +39,46 @@ exports.register = async (req, res) => {
 
 exports.getAll = async (req, res) => {
   try {
-    const registrations = await CourierRegistration.findAll({
+    const { page, limit, q } = req.query;
+    const { Op } = require('sequelize');
+
+    const isPaginated = page && limit;
+    const pageNum = isPaginated ? parseInt(page, 10) : 1;
+    const limitNum = isPaginated ? parseInt(limit, 10) : null;
+    const offset = isPaginated ? (pageNum - 1) * limitNum : null;
+
+    const where = {};
+    if (q) {
+      where[Op.or] = [
+        { fullName: { [Op.like]: `%${q}%` } },
+        { phoneNumber: { [Op.like]: `%${q}%` } },
+        { governorate: { [Op.like]: `%${q}%` } },
+        { area: { [Op.like]: `%${q}%` } },
+      ];
+    }
+
+    const queryOptions = {
+      where,
       order: [['created_at', 'DESC']],
-    });
+    };
+
+    if (isPaginated) {
+      queryOptions.limit = limitNum;
+      queryOptions.offset = offset;
+      const { rows, count } = await CourierRegistration.findAndCountAll(queryOptions);
+      return res.status(200).json({
+        success: true,
+        data: rows,
+        meta: {
+          total: count,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(count / limitNum)
+        }
+      });
+    }
+
+    const registrations = await CourierRegistration.findAll(queryOptions);
 
     return res.status(200).json({
       success: true,

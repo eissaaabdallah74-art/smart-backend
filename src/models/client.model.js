@@ -62,6 +62,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: 'contract_termination_date',
       },
+      isOrderLog: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+        field: 'is_order_log',
+      },
       isActive: {
         type: DataTypes.BOOLEAN,
         defaultValue: true,
@@ -79,6 +84,12 @@ module.exports = (sequelize, DataTypes) => {
       color: {
         type: DataTypes.STRING(20),
         allowNull: true,
+      },
+      clearancePeriodDays: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 30,
+        field: 'clearance_period_days',
       },
     },
     {

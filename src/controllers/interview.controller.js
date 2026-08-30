@@ -21,12 +21,13 @@ const {
 } = require("../services/driver-sync.service");
 
 const INTERVIEW_INCLUDES = [
-  { model: Client, as: "client", attributes: ["id", "name"] },
+  { model: Client, as: "client", attributes: ["id", "name", "contactEmail", "contact_email", "pointOfContact", "point_of_contact"] },
   { model: Hub, as: "hub", attributes: ["id", "name"] },
   { model: Zone, as: "zone", attributes: ["id", "name"] },
   { model: Vendor, as: "vendor", attributes: ["id", "name", "code"] }, // ✅ NEW
   { model: Auth, as: "accountManager", attributes: ["id", "fullName"] },
   { model: Auth, as: "interviewer", attributes: ["id", "fullName"] },
+  { model: Driver, as: "contractLocationCourier", attributes: ["id", "name"] },
 ];
 
 /* =========================
@@ -284,7 +285,7 @@ async function applyPendingRequestDecrementForInterview(interview, t, audit) {
 
 exports.getAllInterviews = async (req, res) => {
   try {
-    const { q, clientId, hubId, zoneId, status, vendorId } = req.query;
+    const { q, clientId, hubId, zoneId, status, vendorId, interviewerId, accountManagerId, hrFeedback } = req.query;
     const where = {};
 
     if (q) {
@@ -300,17 +301,45 @@ exports.getAllInterviews = async (req, res) => {
     if (clientId) where.clientId = Number(clientId);
     if (hubId) where.hubId = Number(hubId);
     if (zoneId) where.zoneId = Number(zoneId);
-    if (vendorId) where.vendorId = Number(vendorId); // ✅ NEW
+    if (vendorId) where.vendorId = Number(vendorId);
+    if (interviewerId) where.interviewerId = Number(interviewerId);
+    if (accountManagerId) where.accountManagerId = Number(accountManagerId);
     if (status) where.courierStatus = status;
     if (req.query.signedWithHr) where.signedWithHr = req.query.signedWithHr;
+    if (hrFeedback) where.hrFeedback = hrFeedback;
 
-    const interviews = await Interview.findAll({
-      where,
-      order: [["id", "DESC"]],
-      include: INTERVIEW_INCLUDES,
-    });
+    if (req.query.page && req.query.limit) {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const offset = (page - 1) * limit;
 
-    return res.json(interviews);
+      const { count, rows } = await Interview.findAndCountAll({
+        where,
+        order: [["id", "DESC"]],
+        include: INTERVIEW_INCLUDES,
+        limit,
+        offset,
+        distinct: true
+      });
+
+      return res.json({
+        data: rows,
+        meta: {
+          total: count,
+          page,
+          limit,
+          totalPages: Math.ceil(count / limit)
+        }
+      });
+    } else {
+      const interviews = await Interview.findAll({
+        where,
+        order: [["id", "DESC"]],
+        include: INTERVIEW_INCLUDES,
+      });
+
+      return res.json(interviews);
+    }
   } catch (error) {
     console.error("getAllInterviews error:", error);
     return res.status(500).json({ message: "Internal server error" });
@@ -364,6 +393,10 @@ exports.createInterview = async (req, res) => {
       phoneNumber,
       nationalId,
       residence,
+      relativeName,
+      relativePhoneNumber,
+      contractLocationType,
+      contractLocationCourierId,
       clientId,
       hubId,
       zoneId,
@@ -371,6 +404,7 @@ exports.createInterview = async (req, res) => {
       position,
       module,
       vehicleType,
+      vehiclePlateNumber,
 
       vLicenseExpiryDate,
       dLicenseExpiryDate,
@@ -388,6 +422,13 @@ exports.createInterview = async (req, res) => {
       courierStatus,
       securityResult,
       notes,
+      trustReceiptsCount,
+      trustReceiptsAmount,
+      paymentMethod,
+      bankName,
+      bankAccountNumber,
+      walletName,
+      walletNumber,
     } = req.body;
     
     phoneNumber = phoneNumber ? formatLocalEgyptianPhone(phoneNumber) : null;
@@ -397,6 +438,18 @@ exports.createInterview = async (req, res) => {
         new Error("courierName, phoneNumber and clientId are required"),
         { statusCode: 400 }
       );
+    }
+
+    const isSigned = (hrFeedback || "").toString().toLowerCase().includes("signed");
+    if (isSigned) {
+      const count = Number(trustReceiptsCount || 0);
+      const amount = Number(trustReceiptsAmount || 0);
+      if (count <= 0 || amount <= 0) {
+        throw Object.assign(
+          new Error("يجب إدخال عدد إيصالات الأمانة وقيمتها أولاً لإتمام عملية التعاقد (الحالة Signed)."),
+          { statusCode: 400 }
+        );
+      }
     }
 
     // ✅ vendorId required + exists
@@ -441,6 +494,10 @@ exports.createInterview = async (req, res) => {
         phoneNumber,
         nationalId,
         residence,
+        relativeName,
+        relativePhoneNumber,
+        contractLocationType: contractLocationType || 'company',
+        contractLocationCourierId: contractLocationCourierId || null,
         clientId,
         hubId,
         zoneId,
@@ -448,6 +505,7 @@ exports.createInterview = async (req, res) => {
         position,
         module,
         vehicleType: normalizedVehicleType,
+        vehiclePlateNumber: vehiclePlateNumber || null,
         day1Date: isCourierActive(courierStatus) ? new Date().toISOString().split('T')[0] : null,
         hiringDate: (securityResult || "").toString().toLowerCase() === "negative" ? new Date().toISOString().split('T')[0] : null,
 
@@ -467,6 +525,13 @@ exports.createInterview = async (req, res) => {
         courierStatus,
         securityResult,
         notes,
+        trustReceiptsCount: trustReceiptsCount ? Number(trustReceiptsCount) : 0,
+        trustReceiptsAmount: trustReceiptsAmount ? Number(trustReceiptsAmount) : 0.00,
+        paymentMethod: paymentMethod || null,
+        bankName: bankName || null,
+        bankAccountNumber: bankAccountNumber || null,
+        walletName: walletName || null,
+        walletNumber: walletNumber || null,
       },
       { transaction: t, audit }
     );
@@ -554,6 +619,10 @@ exports.updateInterview = async (req, res) => {
       "phoneNumber",
       "nationalId",
       "residence",
+      "relativeName",
+      "relativePhoneNumber",
+      "contractLocationType",
+      "contractLocationCourierId",
       "clientId",
       "hubId",
       "zoneId",
@@ -561,6 +630,7 @@ exports.updateInterview = async (req, res) => {
       "position",
       "module",
       "vehicleType",
+      "vehiclePlateNumber",
       "vLicenseExpiryDate",
       "dLicenseExpiryDate",
       "idExpiryDate",
@@ -578,6 +648,13 @@ exports.updateInterview = async (req, res) => {
       "notes",
       "day1Date",
       "hiringDate",
+      "trustReceiptsCount",
+      "trustReceiptsAmount",
+      "paymentMethod",
+      "bankName",
+      "bankAccountNumber",
+      "walletName",
+      "walletNumber",
     ];
 
     const changedFields = fields.filter((f) =>
@@ -617,6 +694,15 @@ exports.updateInterview = async (req, res) => {
     }
 
     const isNowSigned = (interview.hrFeedback || "").toString().toLowerCase().includes("signed");
+    if (isNowSigned) {
+      const count = Number(typeof req.body.trustReceiptsCount !== 'undefined' ? req.body.trustReceiptsCount : interview.trustReceiptsCount || 0);
+      const amount = Number(typeof req.body.trustReceiptsAmount !== 'undefined' ? req.body.trustReceiptsAmount : interview.trustReceiptsAmount || 0);
+      if (count <= 0 || amount <= 0) {
+        await t.rollback();
+        return res.status(400).json({ message: "يجب إدخال عدد إيصالات الأمانة وقيمتها أولاً لإتمام عملية التعاقد (الحالة Signed)." });
+      }
+    }
+
     if (!wasSigned && isNowSigned && !interview.ticketNo && interview.clientId) {
       interview.ticketNo = await generateUniqueTicketNo(interview.clientId);
       interview.ticketExpiresAt = addDays(new Date(), 14);

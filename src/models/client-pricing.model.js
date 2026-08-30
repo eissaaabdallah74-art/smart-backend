@@ -23,6 +23,16 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: 'zone_id',
       },
+      hubIds: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        field: 'hub_ids',
+      },
+      zoneIds: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        field: 'zone_ids',
+      },
       module: {
         type: DataTypes.STRING(255),
         allowNull: false,

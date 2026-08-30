@@ -299,7 +299,7 @@ exports.getPayrollBreakdowns = async (req, res) => {
         });
 
         const myPayrolls = [];
-        const myIdClean = String(req.driver.courierId).trim().replace(/\s+/g, '');
+        const myIdClean = String(req.driver.nationalId || req.driver.courierId || '').trim().replace(/\s+/g, '');
 
         for (const bk of breakdowns) {
             let bkEntries = bk.entries;

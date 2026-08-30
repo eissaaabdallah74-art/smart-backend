@@ -24,6 +24,11 @@ db.CourierRegistration = require("./courier-registration.model")(
   sequelize,
   DataTypes
 );
+db.OldTrustReceipt = require("./old-trust-receipt.model")(sequelize, DataTypes);
+db.Custody = require("./custody.model")(sequelize, DataTypes);
+db.CustodyItem = require("./custody-item.model")(sequelize, DataTypes);
+db.CourierClearance = require("./courier-clearance.model")(sequelize, DataTypes);
+db.OpsHrRequest = require("./ops-hr-request.model")(sequelize, DataTypes);
 
 db.Vendor = require("./vendor.model")(sequelize, DataTypes);
 
@@ -108,6 +113,7 @@ db.EmployeeEvaluation = require("./employee-evaluation.model")(
   sequelize,
   DataTypes
 );
+db.EmployeeForm2 = require("./employee-form2.model")(sequelize, DataTypes);
 
 // ===================== Employee Loans =====================
 db.EmployeeLoanPolicy = require("./employee-loan-policy.model.js")(
@@ -119,6 +125,9 @@ db.EmployeeLoan = require("./employee-loan.model")(sequelize, DataTypes);
 // ✅ NEW: LoanRequest + LoanInstallment
 db.LoanRequest = require("./loan-request.model")(sequelize, DataTypes);
 db.LoanInstallment = require("./loan-installment.model")(sequelize, DataTypes);
+
+// ===================== User Personal Tasks ====================="
+db.UserTask = require("./user-task.model")(sequelize, DataTypes);
 
 // ===================== Company Documents =====================
 db.Company = require("./company.model")(sequelize, DataTypes);
@@ -144,11 +153,19 @@ db.KpiElement = require("./kpi-element.model")(sequelize, DataTypes);
 db.UserKpiConfig = require("./user-kpi-config.model")(sequelize, DataTypes);
 db.UserKpiEvaluation = require("./user-kpi-evaluation.model")(sequelize, DataTypes);
 
+// ===================== Target Bonuses =====================
+db.TargetBonusRule = require("./target-bonus-rule.model")(sequelize, DataTypes);
+db.WeeklyInvoice = require("./weekly-invoice.model")(sequelize, DataTypes);
+
 // ===================== Relations =====================
 
 // Breakdown ↔ Client
 db.Breakdown.belongsTo(db.Client, { foreignKey: "client_id", as: "client" });
 db.Client.hasMany(db.Breakdown, { foreignKey: "client_id", as: "breakdowns" });
+
+// WeeklyInvoice ↔ Client
+db.WeeklyInvoice.belongsTo(db.Client, { foreignKey: "client_id", as: "client" });
+db.Client.hasMany(db.WeeklyInvoice, { foreignKey: "client_id", as: "weeklyInvoices" });
 
 // Tracking relation removed as it is now merged into Driver
 
@@ -222,6 +239,15 @@ db.Auth.hasMany(db.Client, {
 db.Client.hasMany(db.Hub, { foreignKey: "client_id", as: "hubs" });
 db.Hub.belongsTo(db.Client, { foreignKey: "client_id", as: "client" });
 
+// Target Bonus Rules Relations
+db.TargetBonusRule.belongsTo(db.Client, { foreignKey: "client_id", as: "client" });
+db.Client.hasMany(db.TargetBonusRule, { foreignKey: "client_id", as: "targetBonusRules" });
+
+db.TargetBonusRule.belongsTo(db.VehicleType, { foreignKey: "vehicle_type_id", as: "vehicleType" });
+db.VehicleType.hasMany(db.TargetBonusRule, { foreignKey: "vehicle_type_id", as: "targetBonusRules" });
+
+db.TargetBonusRule.belongsTo(db.Auth, { foreignKey: "created_by_id", as: "createdBy" });
+
 // Hub ↔ Zone
 db.Hub.hasMany(db.Zone, { foreignKey: "hub_id", as: "zones" });
 db.Zone.belongsTo(db.Hub, { foreignKey: "hub_id", as: "hub" });
@@ -256,6 +282,16 @@ db.Interview.belongsTo(db.PendingRequest, {
 db.Interview.belongsTo(db.PendingRequestItem, {
   foreignKey: "inventoryPendingRequestItemId",
   as: "inventoryPendingRequestItem",
+});
+
+// Contract Location relations
+db.Interview.belongsTo(db.Driver, {
+  foreignKey: "contract_location_courier_id",
+  as: "contractLocationCourier",
+});
+db.Driver.belongsTo(db.Driver, {
+  foreignKey: "contract_location_courier_id",
+  as: "contractLocationCourier",
 });
 
 // PendingRequest ↔ Client / Hub / Zone
@@ -384,6 +420,17 @@ db.EmployeeEvaluation.belongsTo(db.Employee, {
   as: "employee",
 });
 
+db.Employee.hasMany(db.EmployeeForm2, {
+  foreignKey: { name: "employeeId", field: "employee_id" },
+  as: "form2Records",
+  onDelete: "CASCADE",
+  hooks: true,
+});
+db.EmployeeForm2.belongsTo(db.Employee, {
+  foreignKey: { name: "employeeId", field: "employee_id" },
+  as: "employee",
+});
+
 // Attendance Relations
 db.Employee.hasOne(db.EmployeeAttendanceProfile, {
   foreignKey: { name: "employeeId", field: "employee_id" },
@@ -506,6 +553,16 @@ db.DriverLoan.belongsTo(db.Auth, {
 db.DriverLoan.belongsTo(db.Auth, {
   foreignKey: "decided_by_id",
   as: "decidedBy",
+});
+
+// ✅ UserTask relations
+db.Auth.hasMany(db.UserTask, {
+  foreignKey: "auth_id",
+  as: "tasks",
+});
+db.UserTask.belongsTo(db.Auth, {
+  foreignKey: "auth_id",
+  as: "user",
 });
 
 // ===================== Employee Loans Relations =====================
@@ -767,6 +824,22 @@ db.DriverAttendance.belongsTo(db.Driver, {
   as: "driver",
 });
 
+// Custody Relations
+db.Custody.belongsTo(db.Driver, { foreignKey: 'driverId', as: 'driver' });
+db.Driver.hasMany(db.Custody, { foreignKey: 'driverId', as: 'custodies' });
+db.Custody.belongsTo(db.Employee, { foreignKey: 'employeeId', as: 'employee' });
+db.Employee.hasMany(db.Custody, { foreignKey: 'employeeId', as: 'custodies' });
+db.Custody.belongsTo(db.CustodyItem, { foreignKey: 'custodyItemId', as: 'custodyItem' });
+db.Custody.belongsTo(db.CustodyItem, { foreignKey: 'replacementCustodyItemId', as: 'replacementCustodyItem' });
+db.CustodyItem.hasMany(db.Custody, { foreignKey: 'custodyItemId', as: 'assignments' });
+
+// Courier Clearance Relations
+db.CourierClearance.belongsTo(db.Driver, { foreignKey: 'driverId', as: 'driver' });
+db.Driver.hasOne(db.CourierClearance, { foreignKey: 'driverId', as: 'clearance' });
+db.CourierClearance.belongsTo(db.Auth, { foreignKey: 'operationApprovedBy', as: 'operationApprover' });
+db.CourierClearance.belongsTo(db.Auth, { foreignKey: 'financeApprovedBy', as: 'financeApprover' });
+db.CourierClearance.belongsTo(db.Auth, { foreignKey: 'hrApprovedBy', as: 'hrApprover' });
+
 // ===================== KPI Relations =====================
 db.KpiElement.hasMany(db.UserKpiConfig, {
   foreignKey: { name: 'kpiElementId', field: 'kpi_element_id' },
@@ -850,6 +923,13 @@ db.ChatMessage.belongsTo(db.Auth, { as: "sender", foreignKey: "sender_id" });
 db.ChatMessage.belongsTo(db.Auth, { as: "receiver", foreignKey: "receiver_id" });
 db.Auth.hasMany(db.ChatMessage, { as: "sentMessages", foreignKey: "sender_id" });
 db.Auth.hasMany(db.ChatMessage, { as: "receivedMessages", foreignKey: "receiver_id" });
+
+// ===================== Ops Hr Request Relations =====================
+db.OpsHrRequest.belongsTo(db.Driver, { foreignKey: 'driver_id', as: 'driver' });
+db.Driver.hasMany(db.OpsHrRequest, { foreignKey: 'driver_id', as: 'opsHrRequests' });
+
+db.OpsHrRequest.belongsTo(db.Auth, { foreignKey: 'requested_by', as: 'requester' });
+db.OpsHrRequest.belongsTo(db.Auth, { foreignKey: 'hr_handled_by', as: 'hrHandler' });
 
 module.exports = db;
 

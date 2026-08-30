@@ -19,6 +19,9 @@ router.post('/sync-from-interviews', driverController.syncDriversFromInterviews)
 // POST /api/drivers/bulk
 router.post('/bulk', driverController.bulkUpsertDrivers);
 
+// POST /api/drivers/aliases/bulk
+router.post('/aliases/bulk', driverController.bulkUpdateAliases);
+
 // GET /api/drivers/attendance/daily
 router.get('/attendance/daily', driverController.getDriverAttendances);
 
@@ -36,6 +39,9 @@ router.post('/', driverController.createDriver);
 
 // PUT /api/drivers/:id
 router.put('/:id', driverController.updateDriver);
+
+// PUT /api/drivers/:id/delay-balance
+router.put('/:id/delay-balance', driverController.updateDelayBalance);
 
 // DELETE /api/drivers/:id
 router.delete('/:id', driverController.deleteDriver);

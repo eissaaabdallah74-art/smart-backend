@@ -18,6 +18,7 @@ const DRIVER_CONTRACT_STATUSES = [
   'Unreachable/Reschedule',
   'Resigned',
   'Hold zone',
+  'Follow up scheduled',
 ];
 
 const SIGNED_WITH_HR_STATUSES = [
@@ -25,6 +26,7 @@ const SIGNED_WITH_HR_STATUSES = [
   'Will Think About Our Offers',
   'Missing documents',
   'Unqualified',
+  'hiring from hold',
 ];
 
 const FINANCE_TRANSACTION_TYPES = ['revenue', 'expense'];

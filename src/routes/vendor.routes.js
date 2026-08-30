@@ -8,6 +8,7 @@ const vendor = require("../controllers/vendor.controller");
 
 router.get("/", vendor.getAllVendors);
 router.get("/:id", vendor.getVendorById);
+router.post("/bulk", vendor.bulkCreateVendors);
 router.post("/", vendor.createVendor);
 router.put("/:id", vendor.updateVendor);
 router.delete("/:id", vendor.deleteVendor);

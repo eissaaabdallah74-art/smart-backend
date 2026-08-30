@@ -88,13 +88,6 @@ module.exports = (sequelize, DataTypes) => {
         field: 'wallet_number',
       },
 
-      ticketRequested: {
-        type: DataTypes.BOOLEAN,
-        allowNull: false,
-        defaultValue: false,
-        field: 'ticket_requested',
-      },
-
       requestText: {
         type: DataTypes.TEXT,
         allowNull: true,

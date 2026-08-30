@@ -8,8 +8,8 @@ exports.createPricing = async (req, res) => {
   try {
     const clientId = req.params.clientId;
     const {
-      hub_id,
-      zone_id,
+      hub_ids,
+      zone_ids,
       module,
       vehicle_type,
       fixed_salary,
@@ -25,8 +25,10 @@ exports.createPricing = async (req, res) => {
 
     const pricing = await ClientPricing.create({
       clientId,
-      hubId: hub_id || null,
-      zoneId: zone_id || null,
+      hubId: (hub_ids && hub_ids.length === 1) ? hub_ids[0] : null,
+      zoneId: (zone_ids && zone_ids.length === 1) ? zone_ids[0] : null,
+      hubIds: hub_ids || null,
+      zoneIds: zone_ids || null,
       module,
       vehicleType: vehicle_type,
       fixedSalary: fixed_salary || null,
@@ -68,8 +70,31 @@ exports.getClientPricings = async (req, res) => {
       ],
     });
 
+    const allHubs = await Hub.findAll({ attributes: ['id', 'name'] });
+    const allZones = await Zone.findAll({ attributes: ['id', 'name'] });
+
+    const formattedPricings = pricings.map(p => {
+      const plain = p.get({ plain: true });
+      if (plain.hubIds && plain.hubIds.length > 0) {
+        plain.hubs = allHubs.filter(h => plain.hubIds.includes(h.id));
+      } else if (plain.hub) {
+        plain.hubs = [plain.hub];
+      } else {
+        plain.hubs = [];
+      }
+
+      if (plain.zoneIds && plain.zoneIds.length > 0) {
+        plain.zones = allZones.filter(z => plain.zoneIds.includes(z.id));
+      } else if (plain.zone) {
+        plain.zones = [plain.zone];
+      } else {
+        plain.zones = [];
+      }
+      return plain;
+    });
+
     return res.status(200).json({
-      data: pricings,
+      data: formattedPricings,
     });
   } catch (error) {
     console.error('Error fetching client pricings:', error);
@@ -91,8 +116,8 @@ exports.updatePricing = async (req, res) => {
     }
 
     const {
-      hub_id,
-      zone_id,
+      hub_ids,
+      zone_ids,
       module,
       vehicle_type,
       fixed_salary,
@@ -107,8 +132,10 @@ exports.updatePricing = async (req, res) => {
     } = req.body;
 
     await pricing.update({
-      hubId: hub_id !== undefined ? hub_id : pricing.hubId,
-      zoneId: zone_id !== undefined ? zone_id : pricing.zoneId,
+      hubId: (hub_ids && hub_ids.length === 1) ? hub_ids[0] : pricing.hubId,
+      zoneId: (zone_ids && zone_ids.length === 1) ? zone_ids[0] : pricing.zoneId,
+      hubIds: hub_ids !== undefined ? hub_ids : pricing.hubIds,
+      zoneIds: zone_ids !== undefined ? zone_ids : pricing.zoneIds,
       module: module !== undefined ? module : pricing.module,
       vehicleType: vehicle_type !== undefined ? vehicle_type : pricing.vehicleType,
       fixedSalary: fixed_salary !== undefined ? fixed_salary : pricing.fixedSalary,

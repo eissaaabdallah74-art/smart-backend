@@ -7,7 +7,7 @@ const { LoanRequest, Auth } = db;
 function isOperationSeniorOrJunior(user) {
   return (
     user &&
-    user.role === 'operation' &&
+    (user.role === 'operation' || user.role === 'poc') &&
     (user.position === 'senior' || user.position === 'junior')
   );
 }

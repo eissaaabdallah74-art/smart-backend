@@ -31,7 +31,8 @@ module.exports = (sequelize, DataTypes) => {
           'operation',
           'hr',
           'finance',
-          'supply_chain'
+          'supply_chain',
+          'poc'
         ),
         defaultValue: 'operation',
       },

@@ -50,6 +50,31 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
 
+      relativeName: {
+        type: DataTypes.STRING(150),
+        allowNull: true,
+        field: "relative_name",
+      },
+
+      relativePhoneNumber: {
+        type: DataTypes.STRING(40),
+        allowNull: true,
+        field: "relative_phone_number",
+      },
+
+      contractLocationType: {
+        type: DataTypes.ENUM("company", "courier"),
+        allowNull: true,
+        defaultValue: "company",
+        field: "contract_location_type",
+      },
+
+      contractLocationCourierId: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        field: "contract_location_courier_id",
+      },
+
       courierCode: {
         type: DataTypes.STRING(50),
         allowNull: true,
@@ -141,6 +166,12 @@ module.exports = (sequelize, DataTypes) => {
         field: 'd_license_expiry_date',
       },
 
+      sheetAliases: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        field: 'sheet_aliases',
+      },
+
       idExpiryDate: {
         type: DataTypes.DATEONLY,
         allowNull: true,
@@ -162,6 +193,13 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DECIMAL(10, 2),
         allowNull: true,
         field: 'liability_amount',
+      },
+
+      delayBalance: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
+        defaultValue: 0.00,
+        field: 'delay_balance',
       },
 
       signed: {
@@ -203,6 +241,12 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(150),
         allowNull: true,
         field: 'exception_by',
+      },
+
+      lastSecurityCheckDate: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: 'last_security_check_date',
       },
 
       vendorId: {
@@ -264,6 +308,26 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
 
+      trustReceiptsCount: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        defaultValue: 0,
+        field: "trust_receipts_count",
+      },
+
+      trustReceiptsAmount: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
+        defaultValue: 0.00,
+        field: "trust_receipts_amount",
+      },
+
+      crmDay1Status: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        field: "crm_day1_status",
+      },
+
       // ===================== Blacklist Fields =====================
       isBlacklisted: {
         type: DataTypes.BOOLEAN,
@@ -282,6 +346,12 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATE,
         allowNull: true,
         field: 'blacklisted_at',
+      },
+
+      inactiveDate: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: 'inactive_date',
       },
 
       // ===================== Audit Fields =====================
@@ -381,6 +451,52 @@ module.exports = (sequelize, DataTypes) => {
   Driver.CONTRACT_STATUSES = DRIVER_CONTRACT_STATUSES;
   Driver.SIGNED_WITH_HR_STATUSES = SIGNED_WITH_HR_STATUSES;
   Driver.PAYMENT_METHODS = DRIVER_PAYMENT_METHODS;
+
+  Driver.prototype.toJSON = function () {
+    const values = Object.assign({}, this.get());
+    
+    if (values.vendor) {
+        const isSMV = values.vendor.name && values.vendor.name.trim().toLowerCase() === 'smv';
+        
+        if (!isSMV) {
+            const vBank = values.vendor.walletOrBankAccount || '';
+            const isWallet = vBank.toLowerCase().includes('vodafone') || 
+                             vBank.toLowerCase().includes('wallet') || 
+                             vBank.toLowerCase().includes('cash') || 
+                             vBank.toLowerCase().includes('محفظ') ||
+                             vBank.toLowerCase().includes('فودافون') ||
+                             vBank.toLowerCase().includes('كاش');
+            
+            values.effectivePaymentMethod = isWallet ? 'wallet' : 'bank';
+            
+            if (isWallet) {
+               values.effectiveWalletName = vBank;
+               values.effectiveWalletNumber = values.vendor.walletOrBankAccountNumber;
+               values.effectiveBankName = null;
+               values.effectiveBankAccountNumber = null;
+            } else {
+               values.effectiveBankName = vBank;
+               values.effectiveBankAccountNumber = values.vendor.walletOrBankAccountNumber;
+               values.effectiveWalletName = null;
+               values.effectiveWalletNumber = null;
+            }
+        } else {
+            values.effectivePaymentMethod = values.paymentMethod;
+            values.effectiveBankName = values.bankName;
+            values.effectiveBankAccountNumber = values.bankAccountNumber;
+            values.effectiveWalletName = values.walletName;
+            values.effectiveWalletNumber = values.walletNumber;
+        }
+    } else {
+        values.effectivePaymentMethod = values.paymentMethod;
+        values.effectiveBankName = values.bankName;
+        values.effectiveBankAccountNumber = values.bankAccountNumber;
+        values.effectiveWalletName = values.walletName;
+        values.effectiveWalletNumber = values.walletNumber;
+    }
+    
+    return values;
+  };
 
   return Driver;
 };

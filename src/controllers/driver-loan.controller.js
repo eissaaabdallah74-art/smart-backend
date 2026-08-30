@@ -1,4 +1,4 @@
-const { DriverLoan, Driver, Auth, DriverNotification } = require('../models');
+const { DriverLoan, Driver, Auth, DriverNotification, Vendor } = require('../models');
 
 const loanWritableFields = [
   'driverId',
@@ -10,7 +10,6 @@ const loanWritableFields = [
   'bankAccountNumber',
   'walletName',
   'walletNumber',
-  'ticketRequested',
   'requestText',
   'personalIdFrontImage',
   'personalIdBackImage',
@@ -38,21 +37,59 @@ function buildLoanPayload(body = {}) {
 // GET /api/driver-loans
 exports.getAllDriverLoans = async (req, res) => {
   try {
+    const { Op } = require('sequelize');
+    const { driverId, status, page, limit, q, clientName } = req.query;
+
+    const isPaginated = page && limit;
+    const pageNum = isPaginated ? parseInt(page, 10) : 1;
+    const limitNum = isPaginated ? parseInt(limit, 10) : null;
+    const offset = isPaginated ? (pageNum - 1) * limitNum : null;
+
     const where = {};
 
-    if (req.query.driverId !== undefined) {
-      const driverId = Number(req.query.driverId);
-      if (Number.isNaN(driverId)) {
+    if (driverId !== undefined) {
+      const dId = Number(driverId);
+      if (Number.isNaN(dId)) {
         return res.status(400).json({ message: 'Invalid driverId query param' });
       }
-      where.driverId = driverId;
+      where.driverId = dId;
     }
 
-    if (req.query.status) {
-      where.status = String(req.query.status);
+    if (status) {
+      where.status = String(status);
     }
 
-    const loans = await DriverLoan.findAll({
+    const driverWhere = {};
+    if (clientName) {
+      driverWhere.clientName = clientName;
+    }
+    if (q) {
+      const qNum = Number(q);
+      const isNum = !Number.isNaN(qNum);
+      const searchConditions = [
+        { name: { [Op.like]: `%${q}%` } },
+        { courierPhone: { [Op.like]: `%${q}%` } },
+        { clientName: { [Op.like]: `%${q}%` } },
+      ];
+      
+      // If the query is a number, we also search by Loan ID.
+      // This requires using top-level OR with $driver.name$ syntax or similar.
+      if (isNum) {
+        where[Op.or] = [
+          { id: qNum },
+          { '$driver.name$': { [Op.like]: `%${q}%` } },
+          { '$driver.courierPhone$': { [Op.like]: `%${q}%` } },
+          { '$driver.client_name$': { [Op.like]: `%${q}%` } }
+        ];
+      } else {
+        where[Op.or] = searchConditions.map(cond => {
+          const key = Object.keys(cond)[0];
+          return { [`$driver.${key === 'clientName' ? 'client_name' : key}$`]: cond[key] };
+        });
+      }
+    }
+
+    const queryOptions = {
       where,
       include: [
         {
@@ -67,7 +104,8 @@ exports.getAllDriverLoans = async (req, res) => {
             'hub',
             'vendorId',
           ],
-          required: false,
+          where: Object.keys(driverWhere).length ? driverWhere : undefined,
+          required: !!q || !!clientName, // Only require if searching by driver fields
         },
         {
           model: Auth,
@@ -77,8 +115,24 @@ exports.getAllDriverLoans = async (req, res) => {
         },
       ],
       order: [['id', 'DESC']],
-    });
+    };
 
+    if (isPaginated) {
+      queryOptions.limit = limitNum;
+      queryOptions.offset = offset;
+      const { rows, count } = await DriverLoan.findAndCountAll(queryOptions);
+      return res.json({
+        data: rows,
+        meta: {
+          total: count,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(count / limitNum)
+        }
+      });
+    }
+
+    const loans = await DriverLoan.findAll(queryOptions);
     return res.json(loans);
   } catch (error) {
     console.error('getAllDriverLoans error:', error);
@@ -148,9 +202,37 @@ exports.createDriverLoan = async (req, res) => {
       return res.status(400).json({ message: 'paymentMethod is required' });
     }
 
-    const driver = await Driver.findByPk(payload.driverId);
+    const driver = await Driver.findByPk(payload.driverId, {
+      include: [{ model: Vendor, as: 'vendor' }]
+    });
     if (!driver) {
       return res.status(404).json({ message: 'Driver not found' });
+    }
+
+    if (driver.vendor) {
+      const isSMV = driver.vendor.name && driver.vendor.name.trim().toLowerCase() === 'smv';
+      if (!isSMV) {
+         const vBank = driver.vendor.walletOrBankAccount || '';
+         const isWallet = vBank.toLowerCase().includes('vodafone') || 
+                          vBank.toLowerCase().includes('wallet') || 
+                          vBank.toLowerCase().includes('cash') || 
+                          vBank.toLowerCase().includes('محفظ') ||
+                          vBank.toLowerCase().includes('فودافون') ||
+                          vBank.toLowerCase().includes('كاش');
+         
+         payload.paymentMethod = isWallet ? 'wallet' : 'bank';
+         if (isWallet) {
+             payload.walletName = vBank;
+             payload.walletNumber = driver.vendor.walletOrBankAccountNumber;
+             payload.bankName = null;
+             payload.bankAccountNumber = null;
+         } else {
+             payload.bankName = vBank;
+             payload.bankAccountNumber = driver.vendor.walletOrBankAccountNumber;
+             payload.walletName = null;
+             payload.walletNumber = null;
+         }
+      }
     }
 
     // auto snapshots from driver if not sent

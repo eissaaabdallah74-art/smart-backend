@@ -83,6 +83,7 @@ exports.createHub = async (req, res) => {
     const managerHubName = normalizeNullableText(req.body?.managerHubName);
     const managerHubPhone = normalizeNullablePhone(req.body?.managerHubPhone);
     const managerHubEmail = normalizeNullableEmail(req.body?.managerHubEmail);
+    const location = normalizeNullableText(req.body?.location);
 
     if (!name || !clientId) {
       await t.rollback();
@@ -117,6 +118,7 @@ exports.createHub = async (req, res) => {
         managerHubName,
         managerHubPhone,
         managerHubEmail,
+        location,
       },
       { transaction: t }
     );
@@ -167,6 +169,7 @@ exports.updateHub = async (req, res) => {
     const managerHubName = typeof req.body?.managerHubName !== 'undefined' ? normalizeNullableText(req.body?.managerHubName) : hub.managerHubName;
     const managerHubPhone = typeof req.body?.managerHubPhone !== 'undefined' ? normalizeNullablePhone(req.body?.managerHubPhone) : hub.managerHubPhone;
     const managerHubEmail = typeof req.body?.managerHubEmail !== 'undefined' ? normalizeNullableEmail(req.body?.managerHubEmail) : hub.managerHubEmail;
+    const location = typeof req.body?.location !== 'undefined' ? normalizeNullableText(req.body?.location) : hub.location;
 
     if (name) {
       hub.name = name;
@@ -175,6 +178,7 @@ exports.updateHub = async (req, res) => {
     hub.managerHubName = managerHubName;
     hub.managerHubPhone = managerHubPhone;
     hub.managerHubEmail = managerHubEmail;
+    hub.location = location;
 
     if (managerHubEmail && !isValidEmail(managerHubEmail)) {
       return res.status(400).json({ message: 'managerHubEmail is invalid' });

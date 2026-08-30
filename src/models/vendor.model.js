@@ -30,6 +30,24 @@ module.exports = (sequelize, DataTypes) => {
         validate: { isEmail: { msg: "Email is invalid" } },
       },
 
+      walletOrBankAccount: {
+        type: DataTypes.STRING(150),
+        allowNull: true,
+        field: "wallet_or_bank_account",
+      },
+
+      walletOrBankAccountNumber: {
+        type: DataTypes.STRING(150),
+        allowNull: true,
+        field: "wallet_or_bank_account_number",
+      },
+
+      nationalId: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        field: "national_id",
+      },
+
       isActive: {
         type: DataTypes.BOOLEAN,
         defaultValue: true,

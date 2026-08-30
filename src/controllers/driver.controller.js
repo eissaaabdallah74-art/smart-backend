@@ -1,4 +1,4 @@
-const { Driver, DriverAttendance, DriverLoan, Vendor, AuditLog, PendingRequest, PendingRequestItem, Client, Hub, Zone, Payroll, sequelize } = require('../models');
+const { Driver, DriverAttendance, DriverLoan, Vendor, AuditLog, PendingRequest, PendingRequestItem, Client, Hub, Zone, Payroll, Custody, CustodyItem, sequelize } = require('../models');
 const { backfillDriversFromInterviews } = require('../services/driver-sync.service');
 
 const driverWritableFields = [
@@ -41,7 +41,9 @@ const driverWritableFields = [
   'walletNumber',
   'notes',
   'isBlacklisted',
-  'blacklistReason'
+  'blacklistReason',
+  'inactiveDate',
+  'lastSecurityCheckDate'
 ];
 
 function buildDriverPayload(body = {}) {
@@ -59,7 +61,53 @@ function buildDriverPayload(body = {}) {
 // GET /api/drivers
 exports.getAllDrivers = async (req, res) => {
   try {
-    const drivers = await Driver.findAll({
+    const { Op } = require('sequelize');
+    const { query, vendorId, page, limit, clearanceFilter } = req.query;
+
+    const isPaginated = page && limit;
+    const pageNum = isPaginated ? parseInt(page, 10) : 1;
+    const limitNum = isPaginated ? parseInt(limit, 10) : null;
+    const offset = isPaginated ? (pageNum - 1) * limitNum : null;
+
+    let whereClause = {};
+    if (query) {
+      whereClause = {
+        [Op.or]: [
+          { name: { [Op.like]: `%${query}%` } },
+          { courierPhone: { [Op.like]: `%${query}%` } },
+          { nationalId: { [Op.like]: `%${query}%` } }
+        ]
+      };
+    }
+
+    if (vendorId) {
+      whereClause.vendorId = vendorId;
+    }
+
+    const inactiveCondition = {
+      [Op.or]: [
+        { hiringStatus: { [Op.in]: ['Inactive', 'Resigned', 'inactive', 'resigned'] } },
+        { contractStatus: { [Op.in]: ['Inactive', 'Resigned', 'inactive', 'resigned'] } }
+      ]
+    };
+
+    let clearanceRequired = false;
+    let clearanceWhere = {};
+
+    if (clearanceFilter === 'inactive') {
+      whereClause[Op.and] = [inactiveCondition];
+    } else if (clearanceFilter === 'cleared') {
+      clearanceRequired = true;
+      clearanceWhere = { hrStatus: 'approved' };
+    } else if (clearanceFilter === 'pending_clearance') {
+      whereClause[Op.and] = [inactiveCondition];
+      clearanceRequired = false;
+      // We need to filter where clearance is either null or hrStatus is NOT approved
+      whereClause['$clearance.hr_status$'] = { [Op.or]: [{ [Op.is]: null }, { [Op.ne]: 'approved' }] };
+    }
+
+    const queryOptions = {
+      where: whereClause,
       include: [
         {
           model: Vendor,
@@ -67,10 +115,32 @@ exports.getAllDrivers = async (req, res) => {
           attributes: ['id', 'name'],
           required: false,
         },
+        {
+          model: require('../models').CourierClearance,
+          as: 'clearance',
+          where: Object.keys(clearanceWhere).length ? clearanceWhere : undefined,
+          required: clearanceRequired,
+        }
       ],
       order: [['id', 'ASC']],
-    });
+    };
 
+    if (isPaginated) {
+      queryOptions.limit = limitNum;
+      queryOptions.offset = offset;
+      const { rows, count } = await Driver.findAndCountAll(queryOptions);
+      return res.json({
+        data: rows,
+        meta: {
+          total: count,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(count / limitNum)
+        }
+      });
+    }
+
+    const drivers = await Driver.findAll(queryOptions);
     return res.json(drivers);
   } catch (error) {
     console.error('getAllDrivers error:', error);
@@ -335,7 +405,18 @@ exports.getDriverById = async (req, res) => {
           as: 'payrolls',
           separate: true,
           order: [['year', 'DESC'], ['month', 'DESC']],
-          limit: 1,
+          limit: 3,
+        },
+        {
+          model: Custody,
+          as: 'custodies',
+          separate: true,
+          include: [
+            {
+              model: CustodyItem,
+              as: 'custodyItem',
+            }
+          ]
         },
       ],
     });
@@ -363,6 +444,14 @@ exports.createDriver = async (req, res) => {
 
     if (!payload.vendorId) {
       return res.status(400).json({ message: 'vendorId is required' });
+    }
+
+    const hiringStatusLower = (payload.hiringStatus || '').toLowerCase();
+    const contractStatusLower = (payload.contractStatus || '').toLowerCase();
+    if (hiringStatusLower === 'inactive' || hiringStatusLower === 'resigned' || contractStatusLower === 'inactive' || contractStatusLower === 'resigned') {
+      payload.inactiveDate = new Date().toISOString().split('T')[0];
+    } else {
+      payload.inactiveDate = null;
     }
 
     const driver = await Driver.create(payload, { audit });
@@ -408,6 +497,17 @@ exports.updateDriver = async (req, res) => {
       if (payload[key] !== undefined) {
         driver[key] = payload[key];
       }
+    }
+
+    // Automatically set or clear inactiveDate
+    const currentHiringStatus = (driver.hiringStatus || '').toLowerCase();
+    const currentContractStatus = (driver.contractStatus || '').toLowerCase();
+    if (currentHiringStatus === 'inactive' || currentHiringStatus === 'resigned' || currentContractStatus === 'inactive' || currentContractStatus === 'resigned') {
+      if (!driver.inactiveDate) {
+        driver.inactiveDate = new Date().toISOString().split('T')[0];
+      }
+    } else {
+      driver.inactiveDate = null;
     }
 
     if (payload.isBlacklisted !== undefined) {
@@ -495,6 +595,36 @@ exports.updateDriver = async (req, res) => {
   }
 };
 
+// PUT /api/drivers/:id/delay-balance
+exports.updateDelayBalance = async (req, res) => {
+  try {
+    const audit = req.audit;
+    const id = Number(req.params.id);
+
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ message: 'Invalid id parameter' });
+    }
+
+    const { delayBalance } = req.body;
+    if (delayBalance === undefined || isNaN(Number(delayBalance))) {
+      return res.status(400).json({ message: 'Valid delayBalance is required' });
+    }
+
+    const driver = await Driver.findByPk(id);
+    if (!driver) {
+      return res.status(404).json({ message: 'Driver not found' });
+    }
+
+    driver.delayBalance = Number(delayBalance);
+    await driver.save({ audit });
+
+    return res.json({ message: 'Delay balance updated successfully', driver });
+  } catch (error) {
+    console.error('updateDelayBalance error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
 // DELETE /api/drivers/:id
 exports.deleteDriver = async (req, res) => {
   try {
@@ -538,6 +668,48 @@ exports.getBlacklistedDrivers = async (req, res) => {
     return res.json(drivers);
   } catch (error) {
     console.error('getBlacklistedDrivers error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+// POST /api/drivers/aliases/bulk
+exports.bulkUpdateAliases = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const mappings = req.body.mappings; // Array of { driverId: number, alias: string }
+    if (!Array.isArray(mappings) || mappings.length === 0) {
+      await t.rollback();
+      return res.status(400).json({ message: 'mappings array is required' });
+    }
+
+    let updatedCount = 0;
+    for (const mapping of mappings) {
+      if (!mapping.driverId || !mapping.alias) continue;
+
+      const driver = await Driver.findByPk(mapping.driverId, { transaction: t });
+      if (driver) {
+        let aliases = driver.sheetAliases || [];
+        if (typeof aliases === 'string') {
+          try { aliases = JSON.parse(aliases); } catch(e) { aliases = []; }
+        }
+        if (!Array.isArray(aliases)) aliases = [];
+        
+        if (!aliases.includes(mapping.alias)) {
+          aliases.push(mapping.alias);
+          driver.sheetAliases = aliases;
+          await driver.save({ transaction: t, audit: req.audit });
+          updatedCount++;
+        }
+      }
+    }
+
+    await t.commit();
+    return res.json({ success: true, updatedCount });
+  } catch (error) {
+    if (t && !t.finished) {
+      try { await t.rollback(); } catch (_) {}
+    }
+    console.error('bulkUpdateAliases error:', error);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };

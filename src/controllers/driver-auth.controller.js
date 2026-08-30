@@ -35,11 +35,12 @@ exports.verifyId = async (req, res) => {
         const driver = await Driver.findOne({ where: { courierPhone: phone } });
         if (!driver) return res.status(404).json({ message: "رقم الموبايل غير مسجل" });
 
-        if (!driver.courierId) {
+        const nationalId = driver.nationalId || driver.courierId;
+        if (!nationalId) {
             return res.status(200).json({ success: false, message: "لا يوجد رقم قومي مسجل لهذا المندوب، يرجى مراجعة الإدارة" });
         }
 
-        const actualLast4 = driver.courierId.slice(-4);
+        const actualLast4 = nationalId.slice(-4);
         if (actualLast4 !== String(nationalIdLast4)) {
             return res.status(200).json({ success: false, message: "آخر 4 أرقام غير صحيحة" });
         }
@@ -61,7 +62,8 @@ exports.setPassword = async (req, res) => {
         const driver = await Driver.findOne({ where: { courierPhone: phone } });
         if (!driver) return res.status(404).json({ message: "رقم الموبايل غير مسجل" });
 
-        if (!driver.courierId || driver.courierId.slice(-4) !== String(nationalIdLast4)) {
+        const nationalId = driver.nationalId || driver.courierId;
+        if (!nationalId || nationalId.slice(-4) !== String(nationalIdLast4)) {
             return res.status(200).json({ success: false, message: "بيانات التحقق غير صحيحة" });
         }
 

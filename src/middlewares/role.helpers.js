@@ -24,7 +24,7 @@ function isOperationManagerOrSupervisor(user) {
   if (user.role === 'admin') return true;
 
   return (
-    user.role === 'operation' &&
+    (user.role === 'operation' || user.role === 'poc') &&
     (user.position === 'manager' || user.position === 'supervisor')
   );
 }
@@ -32,7 +32,7 @@ function isOperationManagerOrSupervisor(user) {
 function isOperationSeniorOrJunior(user) {
   if (!user) return false;
   return (
-    user.role === 'operation' &&
+    (user.role === 'operation' || user.role === 'poc') &&
     (user.position === 'senior' || user.position === 'junior')
   );
 }
@@ -60,7 +60,7 @@ function requireOperationStaff(req, res, next) {
     return res.status(401).json({ message: 'Unauthorized' });
   }
 
-  if (user.role === 'operation' || user.role === 'admin') {
+  if (user.role === 'operation' || user.role === 'poc' || user.role === 'admin') {
     return next();
   }
 

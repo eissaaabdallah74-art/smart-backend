@@ -33,6 +33,11 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: 0,
         field: 'target_value',
       },
+      managerRollupTarget: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
+        field: 'manager_rollup_target',
+      },
     },
     {
       tableName: 'user_kpi_configs',

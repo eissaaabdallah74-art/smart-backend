@@ -50,6 +50,7 @@ class KpiService {
           kpiElementId: c.kpiElementId,
           weightPercentage: c.weightPercentage,
           targetValue: c.targetValue,
+          managerRollupTarget: c.managerRollupTarget !== undefined ? c.managerRollupTarget : c.targetValue,
         }));
         await UserKpiConfig.bulkCreate(configData, { transaction });
 
@@ -185,23 +186,26 @@ class KpiService {
         achievedValue = await Interview.count({
           where: {
             accountManagerId: { [Op.in]: targetIds },
-            signedWithHr: 'Signed A Contract With HR',
+            signedWithHr: { [Op.in]: ['Signed A Contract With HR', 'hiring from hold'] },
             createdAt: { [Op.between]: [startDate, endDate] },
           },
         });
       } else if (element.calculationType === 'account_manager_day1' || element.calculationType === 'day1') {
-        // Achievement: Actually started (day1Date is set) in this month
+        // Achievement: Actually started (day1Date is set) OR CRM approved it (crmDay1ApprovedAt is set) in this month
         achievedValue = await Interview.count({
           where: {
             accountManagerId: { [Op.in]: targetIds },
-            day1Date: { [Op.between]: [startDate, endDate] },
+            [Op.or]: [
+              { day1Date: { [Op.between]: [startDate, endDate] } },
+              { crmDay1ApprovedAt: { [Op.between]: [startDate, endDate] } }
+            ]
           },
         });
         // Target: Signed with HR in this month (Denominator for conversion)
         const signedCount = await Interview.count({
           where: {
             accountManagerId: { [Op.in]: targetIds },
-            signedWithHr: 'Signed A Contract With HR',
+            signedWithHr: { [Op.in]: ['Signed A Contract With HR', 'hiring from hold'] },
             createdAt: { [Op.between]: [startDate, endDate] },
           },
         });
@@ -215,11 +219,14 @@ class KpiService {
             date: { [Op.between]: [startDate, endDate] },
           },
         });
-        // Target: Total Interviews conducted in this month
+        // Target: Total Interviews conducted in this month that are Signed or Will Think
         const totalInterviews = await Interview.count({
           where: {
             interviewerId: { [Op.in]: targetIds },
             date: { [Op.between]: [startDate, endDate] },
+            signedWithHr: {
+              [Op.in]: ['Signed A Contract With HR', 'Will Think About Our Offers']
+            }
           },
         });
         dynamicTargetOverride = totalInterviews;
@@ -245,7 +252,7 @@ class KpiService {
         });
         
         const subordinatesSum = subConfigs.reduce((sum, c) => {
-           const val = parseFloat(c.targetValue) || 0;
+           const val = parseFloat(c.managerRollupTarget !== null && c.managerRollupTarget !== undefined ? c.managerRollupTarget : c.targetValue) || 0;
            return sum + val;
         }, 0);
         
@@ -264,6 +271,15 @@ class KpiService {
 
       // 4. Calculate earned ratio (Capped at 1.0 based on user requirements for now)
       let achievementRatio = achievedValue / finalTarget;
+      
+      if (element.calculationType === 'interviewer_recruitment' || element.calculationType === 'recruitment') {
+        if (achievementRatio >= 0.75) {
+          achievementRatio = 1.0;
+        } else {
+          achievementRatio = achievementRatio / 0.75;
+        }
+      }
+
       if (achievementRatio > 1) {
         achievementRatio = 1; // Cap at 100% of target
       }
@@ -344,6 +360,16 @@ class KpiService {
     // Determine specific weekend days for this user
     let userWeekendDays = new Set(globalWeekendDays);
     let saturdaysOffCount = null;
+
+    if (weekendPolicy) {
+      if (typeof weekendPolicy === 'string') {
+        try {
+          weekendPolicy = JSON.parse(weekendPolicy);
+        } catch (e) {
+          weekendPolicy = null;
+        }
+      }
+    }
 
     if (weekendPolicy) {
       userWeekendDays = new Set();

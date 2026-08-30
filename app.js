@@ -16,6 +16,7 @@ const clientContractsRoutes = require("./src/routes/client-contracts.routes");
 const driverRoutes = require("./src/routes/driver.routes");
 const trackingRoutes = require("./src/routes/tracking.routes");
 const interviewRoutes = require("./src/routes/interview.routes");
+const oldTrustReceiptsRoutes = require("./src/routes/old-trust-receipt.routes");
 const hubRoutes = require("./src/routes/hub.routes");
 const zoneRoutes = require("./src/routes/zone.routes");
 const pendingRequestsRouter = require("./src/routes/pending-requests.routes");
@@ -87,12 +88,17 @@ app.use(
   clientContractsRoutes
 );
 app.use("/api/drivers", authMiddleware, auditContextMiddleware, driverRoutes);
+app.use("/api/couriers", authMiddleware, auditContextMiddleware, require("./src/routes/courier-clearance.routes"));
 app.use("/api/tracking", authMiddleware, auditContextMiddleware, trackingRoutes);
 app.use("/api/interviews", authMiddleware, auditContextMiddleware, interviewRoutes);
+app.use("/api/old-trust-receipts", authMiddleware, auditContextMiddleware, oldTrustReceiptsRoutes);
 app.use("/api/vendors", authMiddleware, auditContextMiddleware, vendorRoutes);
+app.use("/api/custodies", authMiddleware, auditContextMiddleware, require("./src/routes/custody.routes"));
+app.use("/api/custody-items", authMiddleware, auditContextMiddleware, require("./src/routes/custody-item.routes"));
 app.use("/api/hubs", authMiddleware, auditContextMiddleware, hubRoutes);
 app.use("/api/zones", authMiddleware, auditContextMiddleware, zoneRoutes);
 app.use('/api/driver-loans', authMiddleware, auditContextMiddleware, require('./src/routes/driver-loans.routes'));
+app.use("/api/ops-hr-requests", authMiddleware, auditContextMiddleware, require("./src/routes/ops-hr-request.routes"));
 
 app.use(
   "/api/pending-requests",
@@ -104,7 +110,10 @@ app.use("/api/calls", authMiddleware, auditContextMiddleware, callsRoutes);
 app.use("/api/tasks", authMiddleware, auditContextMiddleware, tasksRouter);
 app.use("/api/reports", authMiddleware, auditContextMiddleware, reportRoutes);
 app.use("/api/employees", authMiddleware, auditContextMiddleware, employeeRoutes);
+app.use("/api/insurance-form2", require("./src/routes/insurance-form2.routes"));
 app.use("/api/kpi", authMiddleware, auditContextMiddleware, kpiRoutes);
+app.use("/api/crm", authMiddleware, auditContextMiddleware, require("./src/routes/crm.routes"));
+app.use("/api/target-bonuses", authMiddleware, auditContextMiddleware, require("./src/routes/target-bonus.routes"));
 
 /**
  * ✅ IMPORTANT ORDER FIX
@@ -153,6 +162,7 @@ app.use("/api/finance/categories", authMiddleware, auditContextMiddleware, finan
 app.use("/api/finance/transactions", authMiddleware, auditContextMiddleware, financeTransactionRoutes);
 app.use("/api/finance/payrolls", authMiddleware, auditContextMiddleware, payrollRoutes);
 app.use("/api/finance/breakdowns", authMiddleware, auditContextMiddleware, require("./src/routes/breakdown.routes"));
+app.use("/api/finance/weekly-invoices", authMiddleware, auditContextMiddleware, require("./src/routes/weekly-invoice.routes"));
 app.use("/api/driver-financial-requests", require("./src/routes/driver-financial-request.routes"));
 app.use("/api/driver-notifications", authMiddleware, auditContextMiddleware, require("./src/routes/driver-notification.routes"));
 const { chatbotRateLimiter } = require("./src/middlewares/rate-limit.middleware");
@@ -165,6 +175,7 @@ app.use("/api/system-aliases", require("./src/routes/system-alias.routes"));
 app.use("/api/system-notifications", systemNotificationRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/hr/payroll", authMiddleware, auditContextMiddleware, payrollRoutes);
+app.use("/api/my-board", require("./src/routes/personal-board.routes"));
 
 // ✅ WhatsApp Module
 app.use("/api/whatsapp", authMiddleware, auditContextMiddleware, require("./src/routes/whatsapp.routes"));
@@ -222,7 +233,26 @@ app.use((err, req, res, _next) => {
       "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowancePercentage` FLOAT DEFAULT 30;",
       "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowanceCalculationMethod` VARCHAR(255) DEFAULT 'PERCENTAGE_OF_BASIC';",
       "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowanceTaxTreatment` VARCHAR(255) DEFAULT 'TAXABLE';",
-      "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowanceSocialInsuranceTreatment` VARCHAR(255) DEFAULT 'EXCLUDED_FROM_SOCIAL_INSURANCE';"
+      "ALTER TABLE `employee_payroll_settings` ADD COLUMN `allowanceSocialInsuranceTreatment` VARCHAR(255) DEFAULT 'EXCLUDED_FROM_SOCIAL_INSURANCE';",
+      "ALTER TABLE `employee_payroll_insurances` ADD COLUMN `insurance_number` VARCHAR(50) DEFAULT NULL;",
+      "ALTER TABLE `employee_payroll_insurances` ADD COLUMN `social_insurance_date` DATE DEFAULT NULL;",
+      "ALTER TABLE `employee_payroll_insurances` ADD COLUMN `social_insurance_exit_date` DATE DEFAULT NULL;",
+      "ALTER TABLE `employee_payroll_insurances` ADD COLUMN `social_insurance_exit_reason` TEXT DEFAULT NULL;",
+      "ALTER TABLE `employee_payroll_insurances` MODIFY COLUMN `medical_insurance_status` ENUM('done', 'pending', 'not_insured', 'resigned_of_insurance') NOT NULL DEFAULT 'not_insured';",
+      "ALTER TABLE `employee_payroll_insurances` MODIFY COLUMN `social_insurance_status` ENUM('done', 'pending', 'not_insured', 'resigned_of_insurance') NOT NULL DEFAULT 'not_insured';",
+      "ALTER TABLE `vendors` ADD COLUMN `wallet_or_bank_account` VARCHAR(255) DEFAULT NULL;",
+      "ALTER TABLE `vendors` ADD COLUMN `wallet_or_bank_account_number` VARCHAR(255) DEFAULT NULL;",
+      "ALTER TABLE `vendors` ADD COLUMN `national_id` VARCHAR(50) DEFAULT NULL;",
+
+      "ALTER TABLE `interviews` ADD COLUMN `payment_method` ENUM('bank', 'wallet') DEFAULT NULL;",
+      "ALTER TABLE `interviews` ADD COLUMN `bank_name` VARCHAR(150) DEFAULT NULL;",
+      "ALTER TABLE `interviews` ADD COLUMN `bank_account_number` VARCHAR(100) DEFAULT NULL;",
+      "ALTER TABLE `interviews` ADD COLUMN `wallet_name` VARCHAR(150) DEFAULT NULL;",
+      "ALTER TABLE `interviews` ADD COLUMN `wallet_number` VARCHAR(100) DEFAULT NULL;",
+      
+      "ALTER TABLE `drivers` ADD COLUMN `trust_receipts_count` INT DEFAULT 0;",
+      "ALTER TABLE `drivers` ADD COLUMN `trust_receipts_amount` DECIMAL(10, 2) DEFAULT 0.00;",
+      "ALTER TABLE `drivers` ADD COLUMN `crm_day1_status` VARCHAR(50) DEFAULT NULL;"
     ];
     for (const q of alterQueries) {
       try {

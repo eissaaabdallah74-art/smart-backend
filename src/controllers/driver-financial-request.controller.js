@@ -2,29 +2,58 @@ const db = require('../models');
 
 exports.listRequests = async (req, res) => {
     try {
+        const { page, limit, q } = req.query;
+        const { Op } = require('sequelize');
+
+        const isPaginated = page && limit;
+        const pageNum = isPaginated ? parseInt(page, 10) : 1;
+        const limitNum = isPaginated ? parseInt(limit, 10) : null;
+        const offset = isPaginated ? (pageNum - 1) * limitNum : null;
+
         // If the logged-in user is an admin/super_admin or operation manager, they see all.
         // If they are an Account Manager (crm), they see requests where accountManagerId matches their ID.
         const userRole = req.user.role;
         const authUserId = req.user.id;
 
         const whereClause = {};
-        if (userRole !== 'super_admin' && userRole !== 'admin' && userRole !== 'operation') {
+        if (userRole !== 'super_admin' && userRole !== 'admin' && userRole !== 'operation' && userRole !== 'poc') {
             // CRM (Account Manager) or others
             whereClause.accountManagerId = authUserId;
         }
 
-        const requests = await db.DriverFinancialRequest.findAll({
+        if (q) {
+            whereClause['$driver.name$'] = { [Op.like]: `%${q}%` };
+        }
+
+        const queryOptions = {
             where: whereClause,
             include: [
                 { 
                     model: db.Driver, 
                     as: 'driver',
-                    attributes: ['id', 'name', 'courierId', 'courierPhone', 'clientName']
+                    attributes: ['id', 'name', 'courierId', 'courierPhone', 'clientName'],
+                    required: !!q,
                 }
             ],
             order: [['createdAt', 'DESC']]
-        });
+        };
 
+        if (isPaginated) {
+            queryOptions.limit = limitNum;
+            queryOptions.offset = offset;
+            const { rows, count } = await db.DriverFinancialRequest.findAndCountAll(queryOptions);
+            return res.json({
+                data: rows,
+                meta: {
+                    total: count,
+                    page: pageNum,
+                    limit: limitNum,
+                    totalPages: Math.ceil(count / limitNum)
+                }
+            });
+        }
+
+        const requests = await db.DriverFinancialRequest.findAll(queryOptions);
         res.json(requests);
     } catch (err) {
         console.error("listRequests Error:", err);
@@ -50,7 +79,7 @@ exports.decideRequest = async (req, res) => {
         }
 
         // Must be authorized
-        if (req.user.role !== 'super_admin' && req.user.role !== 'admin' && req.user.role !== 'operation' && request.accountManagerId !== req.user.id) {
+        if (req.user.role !== 'super_admin' && req.user.role !== 'admin' && req.user.role !== 'operation' && req.user.role !== 'poc' && request.accountManagerId !== req.user.id) {
             await t.rollback();
             return res.status(403).json({ message: "Not authorized to decide this request" });
         }

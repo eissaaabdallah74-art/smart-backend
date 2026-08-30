@@ -163,7 +163,7 @@ exports.getEmployees = async (req, res) => {
       include: [
         { model: EmployeeEmployment, as: 'employment', required: false, where: Object.keys(employmentWhere).length ? employmentWhere : undefined },
         ...(includeAccount === 'true'
-          ? [{ model: Auth, as: 'account', required: false, attributes: ['id', 'fullName', 'email', 'role', 'position', 'isActive', 'hireDate', 'terminationDate', 'creationDate', 'created_at', 'updated_at'] }]
+          ? [{ model: Auth, as: 'account', required: false, attributes: ['id', 'fullName', 'email', 'role', 'position', 'isActive', 'hireDate', 'terminationDate', 'creationDate', 'created_at', 'updated_at', 'weekendPolicy', 'interviewTarget', 'kpiAmount', 'managerId'] }]
           : []),
       ],
       order: [['id', 'DESC']],
@@ -183,6 +183,23 @@ exports.getEmployees = async (req, res) => {
   }
 };
 
+exports.getDepartments = async (req, res) => {
+  try {
+    const rows = await EmployeeEmployment.findAll({
+      attributes: [[sequelize.fn('DISTINCT', sequelize.col('department')), 'department']],
+      where: {
+        department: { [Op.ne]: null }
+      },
+      order: [['department', 'ASC']],
+    });
+    const departments = rows.map(r => r.department).filter(Boolean);
+    return res.json(departments);
+  } catch (error) {
+    console.error('getDepartments error:', error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
 exports.getEmployeeById = async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -194,8 +211,8 @@ exports.getEmployeeById = async (req, res) => {
         { model: EmployeeDocument, as: 'documents' },
         { model: EmployeeEducation, as: 'educations' },
         { model: EmployeeEvaluation, as: 'evaluations' },
-        // account optional (limited fields)
-        { model: Auth, as: 'account', required: false, attributes: ['id', 'fullName', 'email', 'role', 'position', 'isActive', 'hireDate', 'terminationDate', 'creationDate'] },
+        // account optional (limited fields + governance/kpis/weekendPolicy)
+        { model: Auth, as: 'account', required: false, attributes: ['id', 'fullName', 'email', 'role', 'position', 'isActive', 'hireDate', 'terminationDate', 'creationDate', 'weekendPolicy', 'interviewTarget', 'kpiAmount', 'managerId'] },
       ],
     });
 
@@ -262,7 +279,25 @@ exports.updateEmployee = async (req, res) => {
 
       const up = employment;
 
-      if (typeof up.isWorking !== 'undefined') emp.isWorking = !!up.isWorking;
+      if (typeof up.isWorking !== 'undefined') {
+        emp.isWorking = !!up.isWorking;
+        if (emp.isWorking === false) {
+          if (employee.authUserId) {
+            const authAcc = await Auth.findByPk(employee.authUserId, { transaction: t });
+            if (authAcc) {
+              authAcc.isActive = false;
+              await authAcc.save({ transaction: t });
+            }
+          }
+          let pRow = await EmployeePayrollInsurance.findByPk(employee.id, { transaction: t });
+          if (!pRow) {
+            pRow = await EmployeePayrollInsurance.create({ employeeId: employee.id }, { transaction: t });
+          }
+          pRow.medicalInsuranceStatus = 'resigned_of_insurance';
+          pRow.socialInsuranceStatus = 'resigned_of_insurance';
+          await pRow.save({ transaction: t });
+        }
+      }
       if (typeof up.department !== 'undefined') emp.department = up.department || null;
       if (typeof up.jobTitle !== 'undefined') emp.jobTitle = up.jobTitle || null;
       if (typeof up.corporateEmail !== 'undefined') emp.corporateEmail = up.corporateEmail || null;
@@ -343,6 +378,10 @@ exports.upsertPayroll = async (req, res) => {
     const {
       medicalInsuranceStatus,
       socialInsuranceStatus,
+      insuranceNumber,
+      socialInsuranceDate,
+      socialInsuranceExitDate,
+      socialInsuranceExitReason,
       grossSalary,
       insuredSalary,
       employeeShare11,
@@ -355,7 +394,19 @@ exports.upsertPayroll = async (req, res) => {
     }
 
     if (typeof medicalInsuranceStatus !== 'undefined') row.medicalInsuranceStatus = medicalInsuranceStatus;
-    if (typeof socialInsuranceStatus !== 'undefined') row.socialInsuranceStatus = socialInsuranceStatus;
+    if (typeof socialInsuranceStatus !== 'undefined') {
+      const oldStatus = row.socialInsuranceStatus;
+      row.socialInsuranceStatus = socialInsuranceStatus;
+      if (oldStatus !== 'done' && socialInsuranceStatus === 'done' && !row.socialInsuranceDate) {
+        row.socialInsuranceDate = new Date().toISOString().split('T')[0];
+      }
+    }
+    
+    if (typeof insuranceNumber !== 'undefined') row.insuranceNumber = insuranceNumber || null;
+    if (typeof socialInsuranceDate !== 'undefined') row.socialInsuranceDate = socialInsuranceDate || null;
+    if (typeof socialInsuranceExitDate !== 'undefined') row.socialInsuranceExitDate = socialInsuranceExitDate || null;
+    if (typeof socialInsuranceExitReason !== 'undefined') row.socialInsuranceExitReason = socialInsuranceExitReason || null;
+
     if (typeof grossSalary !== 'undefined') row.grossSalary = grossSalary;
     if (typeof insuredSalary !== 'undefined') row.insuredSalary = insuredSalary;
     if (typeof employeeShare11 !== 'undefined') row.employeeShare11 = employeeShare11;

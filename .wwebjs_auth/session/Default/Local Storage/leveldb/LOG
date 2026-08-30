@@ -1,3 +1,6 @@
-2026/04/21-22:23:49.575 9eb0 Reusing MANIFEST D:\eissa\eissa smart vibe\smart-backend\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
-2026/04/21-22:23:49.580 9eb0 Recovering log #3
-2026/04/21-22:23:49.582 9eb0 Reusing old log D:\eissa\eissa smart vibe\smart-backend\.wwebjs_auth\session\Default\Local Storage\leveldb/000003.log 
+2026/06/09-21:04:12.851 64d8 Reusing MANIFEST D:\eissa\eissa smart vibe\smart-backend\.wwebjs_auth\session\Default\Local Storage\leveldb/MANIFEST-000001
+2026/06/09-21:04:12.872 64d8 Recovering log #3
+2026/06/09-21:04:12.874 64d8 Reusing old log D:\eissa\eissa smart vibe\smart-backend\.wwebjs_auth\session\Default\Local Storage\leveldb/000003.log 
+2026/06/09-21:14:43.575 64d8 Level-0 table #5: started
+2026/06/09-21:14:43.588 64d8 Level-0 table #5: 20767 bytes OK
+2026/06/09-21:14:43.590 64d8 Delete type=0 #3

@@ -11,6 +11,9 @@ const { requireHRorAdmin, requireFinanceorAdmin } = require('../middlewares/role
 // GET /api/employees?limit=&offset=&q=&department=&isWorking=&hasAccount=&includeAccount=
 router.get('/', authMiddleware, requireHRorAdmin, employeeController.getEmployees);
 
+// GET /api/employees/departments
+router.get('/departments', authMiddleware, employeeController.getDepartments);
+
 // POST /api/employees
 router.post('/', authMiddleware, requireHRorAdmin, employeeController.createEmployee);
 

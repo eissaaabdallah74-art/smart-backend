@@ -9,7 +9,7 @@ exports.saveBreakdown = async (req, res) => {
 
         const existingBreakdown = await Breakdown.findOne({ where: { clientId, month, year } });
         
-        if (existingBreakdown && existingBreakdown.isLocked) {
+        if (existingBreakdown && existingBreakdown.status === 'locked') {
             return res.status(403).json({ message: 'This breakdown has been locked and invoiced by Finance. It cannot be modified.' });
         }
         
@@ -59,12 +59,12 @@ exports.saveBreakdown = async (req, res) => {
             }
         }
 
-        // Use upsert to handle create or update
         const [breakdown, created] = await Breakdown.upsert({
             clientId,
             month,
             year,
-            entries
+            entries,
+            status: existingBreakdown ? existingBreakdown.status : 'pending_am'
         });
 
         return res.status(created ? 201 : 200).json(breakdown);
@@ -94,9 +94,35 @@ exports.getBreakdowns = async (req, res) => {
     }
 };
 
+exports.updateStatus = async (req, res) => {
+    try {
+        const { clientId, month, year, status, entries } = req.body;
+        if (!clientId || !month || !year || !status) {
+            return res.status(400).json({ message: 'Missing required fields' });
+        }
+
+        const breakdown = await Breakdown.findOne({ where: { clientId, month, year } });
+        if (!breakdown) {
+            return res.status(404).json({ message: 'Breakdown not found' });
+        }
+        
+        if (entries) {
+            breakdown.entries = entries;
+        }
+
+        breakdown.status = status;
+        await breakdown.save();
+
+        return res.json({ message: 'Status updated successfully', breakdown });
+    } catch (error) {
+        console.error('updateStatus error:', error);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
 exports.lockBreakdown = async (req, res) => {
     try {
-        const { clientId, month, year } = req.body;
+        const { clientId, month, year, totalIncome, totalExpense } = req.body;
         if (!clientId || !month || !year) {
             return res.status(400).json({ message: 'Missing required fields' });
         }
@@ -105,24 +131,92 @@ exports.lockBreakdown = async (req, res) => {
         if (!breakdown) {
             return res.status(404).json({ message: 'Breakdown not found' });
         }
+        
+        if (breakdown.status !== 'pending_finance') {
+            return res.status(400).json({ message: 'Breakdown must be approved by Manager (pending_finance) before locking.' });
+        }
 
         breakdown.isLocked = true;
+        breakdown.status = 'locked';
         await breakdown.save();
+        
+        // Generate Finance Transactions
+        const { FinanceTransaction, FinanceCategory, Auth } = require('../models');
+        
+        // Ensure categories exist for breakdown income/expense
+        const [incomeCategory] = await FinanceCategory.findOrCreate({
+            where: { name: 'Breakdown Client Invoice' },
+            defaults: { type: 'income', description: 'Total Invoice Income from Breakdown' }
+        });
+        
+        const [expenseCategory] = await FinanceCategory.findOrCreate({
+            where: { name: 'Breakdown Courier Salaries' },
+            defaults: { type: 'expense', description: 'Total Courier Salaries from Breakdown' }
+        });
 
-        // System Automation: Notify Drivers of Payroll
+        if (totalIncome && Number(totalIncome) > 0) {
+            await FinanceTransaction.create({
+                categoryId: incomeCategory.id,
+                amount: Number(totalIncome),
+                transactionDate: new Date(),
+                description: `Client ${clientId} Invoice Revenue for ${month}/${year}`,
+                referenceId: breakdown.id,
+                referenceType: 'Breakdown',
+                createdById: req.user ? req.user.id : null
+            });
+        }
+        
+        if (totalExpense && Number(totalExpense) > 0) {
+            await FinanceTransaction.create({
+                categoryId: expenseCategory.id,
+                amount: Number(totalExpense),
+                transactionDate: new Date(),
+                description: `Client ${clientId} Courier Payroll Expense for ${month}/${year}`,
+                referenceId: breakdown.id,
+                referenceType: 'Breakdown',
+                createdById: req.user ? req.user.id : null
+            });
+        }
+
+        // System Automation: Notify Drivers of Payroll and Update Delay Balances
         try {
             const entries = typeof breakdown.entries === 'string' ? JSON.parse(breakdown.entries) : breakdown.entries;
             const nationalIds = [];
+            const delayUpdates = [];
+            
             for (const row of (entries || [])) {
                 if (row['Courier ID Card No.']) {
                     nationalIds.push(String(row['Courier ID Card No.']));
                 }
+                
+                // Track delay updates
+                if (row['_normalizedIdCard'] && row.currentDelay !== undefined) {
+                    delayUpdates.push({
+                        idCard: String(row['_normalizedIdCard']),
+                        newDelay: Number(row.currentDelay) || 0
+                    });
+                }
             }
+            
             if (nationalIds.length > 0) {
-                // Find all drivers by national ID
+                const { Op } = require('sequelize');
                 const drivers = await Driver.findAll({
-                    where: { courierId: nationalIds }
+                    where: {
+                        [Op.or]: [
+                            { courierId: nationalIds },
+                            { nationalId: nationalIds }
+                        ]
+                    }
                 });
+                
+                // Update Delay Balances
+                for (const driver of drivers) {
+                    const match = delayUpdates.find(d => d.idCard === driver.nationalId || d.idCard === driver.courierId);
+                    if (match && match.newDelay !== undefined) {
+                        driver.delayBalance = match.newDelay;
+                        await driver.save();
+                    }
+                }
                 
                 const notifications = drivers.map(d => ({
                     driverId: d.id,

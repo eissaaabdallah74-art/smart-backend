@@ -124,6 +124,10 @@ async function upsertDriverFromInterviewId(interviewId, { transaction, audit } =
     nationalId: interview.nationalId ?? null,
 
     residence: interview.residence ?? null,
+    relativeName: interview.relativeName ?? null,
+    relativePhoneNumber: interview.relativePhoneNumber ?? null,
+    contractLocationType: interview.contractLocationType ?? 'company',
+    contractLocationCourierId: interview.contractLocationCourierId ?? null,
 
     clientName: interview.client?.name ?? null,
     pointOfContact: interview.client?.pointOfContact ?? null, // ✅ Map Point of Contact from Client
@@ -151,6 +155,18 @@ async function upsertDriverFromInterviewId(interviewId, { transaction, audit } =
     vLicenseExpiryDate: interview.vLicenseExpiryDate ?? null,
     dLicenseExpiryDate: interview.dLicenseExpiryDate ?? null,
     idExpiryDate: interview.idExpiryDate ?? null,
+
+    // Financial
+    paymentMethod: interview.paymentMethod ?? null,
+    bankName: interview.bankName ?? null,
+    bankAccountNumber: interview.bankAccountNumber ?? null,
+    walletName: interview.walletName ?? null,
+    walletNumber: interview.walletNumber ?? null,
+
+    // Additional Tracking
+    trustReceiptsCount: interview.trustReceiptsCount ?? 0,
+    trustReceiptsAmount: interview.trustReceiptsAmount ?? 0.00,
+    crmDay1Status: interview.crmDay1Status ?? null,
   };
 
   const day1Date =

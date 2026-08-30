@@ -7,6 +7,7 @@ const {
   Employee,
   AttendanceRawLog,
   EmployeeDeviceMapping,
+  Auth,
   sequelize,
 } = require('../../models');
 
@@ -123,9 +124,35 @@ async function syncAttendanceFromRawLogs({ month, uploadedBy, startTime = "09:00
     const dayRows = [];
     const [startH, startM] = startTime.split(':').map(Number);
 
+    // Fetch auth policies for custom attendance time
+    const authUsers = await Auth.findAll({
+      where: { id: Object.keys(grouped).map(Number) },
+      attributes: ['id', 'weekendPolicy'],
+      transaction: t
+    });
+    const userPolicyMap = new Map();
+    for (const u of authUsers) {
+      let policy = u.weekendPolicy;
+      if (typeof policy === 'string') {
+        try { policy = JSON.parse(policy); } catch(e) { policy = {}; }
+      }
+      userPolicyMap.set(u.id, policy || {});
+    }
+
     for (const empIdStr of Object.keys(grouped)) {
       const employeeId = parseInt(empIdStr, 10);
       const dates = grouped[empIdStr];
+
+      let empStartH = startH;
+      let empStartM = startM;
+      const policy = userPolicyMap.get(employeeId);
+      if (policy && policy.attendanceTime) {
+        const parts = policy.attendanceTime.split(':');
+        if (parts.length >= 2) {
+          empStartH = parseInt(parts[0], 10);
+          empStartM = parseInt(parts[1], 10);
+        }
+      }
 
       for (const dateISO of Object.keys(dates)) {
         const dayLogs = dates[dateISO];
@@ -133,7 +160,7 @@ async function syncAttendanceFromRawLogs({ month, uploadedBy, startTime = "09:00
         const clockOut = dayLogs.length > 1 ? dayLogs[dayLogs.length - 1].punchTime : null;
 
         // Calculate late minutes
-        const refStartTime = dayjs(dateISO).hour(startH).minute(startM).second(0);
+        const refStartTime = dayjs(dateISO).hour(empStartH).minute(empStartM).second(0);
         const actualIn = dayjs(clockIn);
         const lateMinutes = Math.max(0, actualIn.diff(refStartTime, 'minute'));
 
@@ -280,6 +307,16 @@ async function importAttendanceFromBuffer({ buffer, filename, uploadedBy }) {
 
     const dayRows = [];
 
+    // Fetch auth policies to adjust late minutes if custom attendance time is set
+    const authUsersForImport = await Auth.findAll({
+      attributes: ['id', 'weekendPolicy'],
+      transaction: t
+    });
+    const authUserPolicyMap = new Map();
+    for (const u of authUsersForImport) {
+      authUserPolicyMap.set(u.id, u.weekendPolicy || {});
+    }
+
     for (const row of normalizedRows) {
       const dateISO = row.__dateISO;
       if (!dateISO) continue;
@@ -306,7 +343,7 @@ async function importAttendanceFromBuffer({ buffer, filename, uploadedBy }) {
       const absentVal = pick(row, 'absent');
       const absent = parseYesTrue(absentVal);
 
-      const lateMin = parseDurationToMinutes(pick(row, 'late'));
+      let lateMin = parseDurationToMinutes(pick(row, 'late'));
 
       const clockIn = parseClockDateTime(dateISO, pick(row, 'clock in', 'clockin'));
       const clockOut = parseClockDateTime(dateISO, pick(row, 'clock out', 'clockout'));
@@ -327,6 +364,21 @@ async function importAttendanceFromBuffer({ buffer, filename, uploadedBy }) {
           });
         }
         continue;
+      }
+
+      if (employeeId && clockIn) {
+        const policy = authUserPolicyMap.get(employeeId);
+        if (policy && policy.attendanceTime) {
+          const parts = policy.attendanceTime.split(':');
+          if (parts.length >= 2) {
+            const empStartH = parseInt(parts[0], 10);
+            const empStartM = parseInt(parts[1], 10);
+            const refStartTime = dayjs(dateISO).hour(empStartH).minute(empStartM).second(0);
+            const actualIn = dayjs(clockIn);
+            // Re-calculate late minutes overriding ZKTeco if custom time is provided
+            lateMin = Math.max(0, actualIn.diff(refStartTime, 'minute'));
+          }
+        }
       }
 
       dayRows.push({

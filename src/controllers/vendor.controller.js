@@ -100,7 +100,7 @@ exports.createVendor = async (req, res) => {
       meta: { controller: 'Vendor', op: 'CREATE' },
     });
 
-    const { name, mobile, email, isActive } = req.body || {};
+    const { name, mobile, email, isActive, walletOrBankAccount, walletOrBankAccountNumber, nationalId } = req.body || {};
 
     if (!name || !String(name).trim() || !mobile || !String(mobile).trim()) {
       await t.rollback();
@@ -120,6 +120,9 @@ exports.createVendor = async (req, res) => {
             name: String(name).trim(),
             mobile: String(mobile).trim(),
             email: email ? String(email).trim() : null,
+            walletOrBankAccount: walletOrBankAccount ? String(walletOrBankAccount).trim() : null,
+            walletOrBankAccountNumber: walletOrBankAccountNumber ? String(walletOrBankAccountNumber).trim() : null,
+            nationalId: nationalId ? String(nationalId).trim() : null,
             isActive: finalIsActive,
             code,
           },
@@ -149,6 +152,79 @@ exports.createVendor = async (req, res) => {
 };
 
 /* =========================
+   POST /api/vendors/bulk
+   body: Array of { name, mobile, email?, walletOrBankAccount?, walletOrBankAccountNumber?, isActive? }
+   ========================= */
+exports.bulkCreateVendors = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const vendors = req.body;
+    if (!Array.isArray(vendors) || vendors.length === 0) {
+      await t.rollback();
+      return res.status(400).json({ message: 'A non-empty array of vendors is required' });
+    }
+
+    const createdVendors = [];
+    for (const vData of vendors) {
+      const { name, mobile, email, walletOrBankAccount, walletOrBankAccountNumber, nationalId, isActive } = vData || {};
+      
+      if (!name || !String(name).trim() || !mobile || !String(mobile).trim()) {
+        continue; // Skip invalid rows
+      }
+      
+      const finalIsActive = typeof isActive === 'boolean' ? isActive : true;
+      
+      let code = await generateNextVendorCode(t);
+      
+      let created = false;
+      for (let i = 0; i < 3; i++) {
+        try {
+          const vendor = await Vendor.create(
+            {
+              name: String(name).trim(),
+              mobile: String(mobile).trim(),
+              email: email ? String(email).trim() : null,
+              walletOrBankAccount: walletOrBankAccount ? String(walletOrBankAccount).trim() : null,
+              walletOrBankAccountNumber: walletOrBankAccountNumber ? String(walletOrBankAccountNumber).trim() : null,
+              nationalId: nationalId ? String(nationalId).trim() : null,
+              isActive: finalIsActive,
+              code,
+            },
+            { transaction: t }
+          );
+          createdVendors.push(vendor);
+          created = true;
+          break;
+        } catch (e) {
+          if (e?.name === 'SequelizeUniqueConstraintError') {
+            code = await generateNextVendorCode(t);
+            continue;
+          }
+          throw e;
+        }
+      }
+      if (!created) {
+         throw new Error('Failed to generate unique vendor code during bulk insert.');
+      }
+    }
+
+    const audit = req.makeAudit?.({
+      summary: `Bulk imported ${createdVendors.length} vendors`,
+      meta: { controller: 'Vendor', op: 'BULK_CREATE', count: createdVendors.length },
+    });
+
+    await t.commit();
+    return res.status(201).json(createdVendors);
+  } catch (error) {
+    if (t && !t.finished) {
+      try { await t.rollback(); } catch (_) {}
+    }
+    console.error('bulkCreateVendors error:', error);
+    return res.status(500).json({ message: error?.message || 'Internal server error' });
+  }
+};
+
+/* =========================
    PUT /api/vendors/:id
    body: name?, mobile?, email?, isActive?
    code is NOT editable.
@@ -168,7 +244,7 @@ exports.updateVendor = async (req, res) => {
       return res.status(404).json({ message: 'Vendor not found' });
     }
 
-    const fields = ['name', 'mobile', 'email', 'isActive'];
+    const fields = ['name', 'mobile', 'email', 'isActive', 'walletOrBankAccount', 'walletOrBankAccountNumber', 'nationalId'];
     const changedFields = fields.filter((f) => Object.prototype.hasOwnProperty.call(req.body, f));
 
     const audit = req.makeAudit?.({
@@ -197,6 +273,21 @@ exports.updateVendor = async (req, res) => {
     if (Object.prototype.hasOwnProperty.call(req.body, 'email')) {
       const v = req.body.email;
       vendor.email = v ? String(v).trim() : null;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, 'walletOrBankAccount')) {
+      const v = req.body.walletOrBankAccount;
+      vendor.walletOrBankAccount = v ? String(v).trim() : null;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, 'walletOrBankAccountNumber')) {
+      const v = req.body.walletOrBankAccountNumber;
+      vendor.walletOrBankAccountNumber = v ? String(v).trim() : null;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, 'nationalId')) {
+      const v = req.body.nationalId;
+      vendor.nationalId = v ? String(v).trim() : null;
     }
 
     if (Object.prototype.hasOwnProperty.call(req.body, 'isActive')) {

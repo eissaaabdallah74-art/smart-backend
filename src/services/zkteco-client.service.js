@@ -2,7 +2,7 @@
 const ZKLib = require("zkh-lib");
 
 class ZktecoClientService {
-  constructor(ipAddress, port = 4370, timeout = 10000, inport = 5200) {
+  constructor(ipAddress, port = 4370, timeout = 10000, inport = 5209) {
     this.ipAddress = ipAddress;
     this.port = port;
     this.timeout = timeout;
@@ -12,12 +12,28 @@ class ZktecoClientService {
 
   async connect() {
     try {
-      this.zkInstance = new ZKLib(this.ipAddress, this.port, this.timeout, this.inport);
+      console.log("1. Creating ZKLib instance...");
+
+      this.zkInstance = new ZKLib(
+        this.ipAddress,
+        this.port,
+        this.timeout,
+        this.inport
+      );
+
+      console.log("2. Calling createSocket()...");
+
       await this.zkInstance.createSocket();
+
+      console.log("3. Socket connected successfully.");
+
       return true;
     } catch (error) {
-      console.error(`Failed to connect to ZKTeco device at ${this.ipAddress}:${this.port}`, error);
-      throw new Error(`ZKTeco Connection Error: ${error.message}`);
+      console.error("CONNECT ERROR");
+      console.error(error);
+      console.error(error.stack);
+
+      throw error;
     }
   }
 

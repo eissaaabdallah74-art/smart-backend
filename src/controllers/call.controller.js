@@ -47,7 +47,7 @@ exports.getOperationStaff = async (req, res) => {
   try {
     const includeInactive = req.query.includeInactive === '1';
 
-    const where = { role: 'operation' };
+    const where = { role: { [Op.in]: ['operation', 'poc'] } };
     if (!includeInactive) {
       where.isActive = true;
     }
@@ -146,7 +146,7 @@ exports.getCallsByAssignee = async (req, res) => {
 exports.getMyCalls = async (req, res) => {
   try {
     const user = req.user;
-    if (!user || (user.role !== 'operation' && user.role !== 'admin')) {
+    if (!user || (user.role !== 'operation' && user.role !== 'poc' && user.role !== 'admin')) {
       return res.status(403).json({ message: 'Operation staff only' });
     }
 
@@ -206,7 +206,7 @@ exports.createCall = async (req, res) => {
     if (!assignee) {
       return res.status(400).json({ message: 'Assignee not found' });
     }
-    if (assignee.role !== 'operation') {
+    if (assignee.role !== 'operation' && assignee.role !== 'poc') {
       return res
         .status(400)
         .json({ message: 'Assignee must be operation user' });
@@ -276,7 +276,7 @@ exports.bulkImportCalls = async (req, res) => {
     const staff = await Auth.findAll({
       where: {
         id: assigneeIdList,
-        role: 'operation',
+        role: { [Op.in]: ['operation', 'poc'] },
       },
     });
 

@@ -28,9 +28,14 @@ class AttendanceSyncService {
           lastPulledAt: new Date()
         }));
 
-        await AttendanceDeviceUser.bulkCreate(usersToUpsert, {
-          updateOnDuplicate: ['uid', 'name', 'role', 'cardNo', 'rawPayload', 'lastPulledAt', 'updated_at']
-        });
+        // Chunk to prevent MySQL packet size limit
+        const chunkSize = 200;
+        for (let i = 0; i < usersToUpsert.length; i += chunkSize) {
+          const chunk = usersToUpsert.slice(i, i + chunkSize);
+          await AttendanceDeviceUser.bulkCreate(chunk, {
+            updateOnDuplicate: ['uid', 'name', 'role', 'cardNo', 'rawPayload', 'lastPulledAt', 'updated_at']
+          });
+        }
       }
 
       await device.update({
@@ -61,10 +66,20 @@ class AttendanceSyncService {
 
     const client = new ZktecoClientService(device.ipAddress, device.port);
     try {
+      console.log("Connecting...");
       await client.connect();
+      console.log("Connected.");
+
+      console.log("Reading attendances...");
       const rawLogs = await client.getAttendances();
+      console.log("Attendance count:", rawLogs ? rawLogs.length : 0);
 
       if (rawLogs && rawLogs.length > 0) {
+        // Filter out very old logs to speed up sync and prevent DB bloat
+        const now = new Date();
+        // Cutoff is the 1st of the PREVIOUS month to ensure we always have recent data
+        const cutoffDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
         const logsToInsert = rawLogs.map(log => ({
           attendanceDeviceId: device.id,
           deviceUserId: log.deviceUserId || log.userSn || log.uid?.toString(),
@@ -75,12 +90,22 @@ class AttendanceSyncService {
           workCode: log.workCode?.toString(),
           rawPayload: log,
           syncedAt: new Date()
-        })).filter(log => log.deviceUserId && log.punchTime); // Ensure required fields exist
-
-        // Use ignoreDuplicates to avoid unique constraint errors (Requires MySQL INSERT IGNORE)
-        await AttendanceRawLog.bulkCreate(logsToInsert, {
-          ignoreDuplicates: true
+        })).filter(log => {
+          if (!log.deviceUserId || !log.punchTime) return false;
+          const logDate = new Date(log.punchTime);
+          return logDate >= cutoffDate;
         });
+
+        console.log(`Filtered logs to insert (since ${cutoffDate.toISOString().split('T')[0]}):`, logsToInsert.length);
+
+        // Chunk logs to avoid max_allowed_packet error
+        const chunkSize = 200;
+        for (let i = 0; i < logsToInsert.length; i += chunkSize) {
+          const chunk = logsToInsert.slice(i, i + chunkSize);
+          await AttendanceRawLog.bulkCreate(chunk, {
+            ignoreDuplicates: true
+          });
+        }
       }
 
       await device.update({
@@ -95,8 +120,10 @@ class AttendanceSyncService {
         lastSyncStatus: "FAILED",
         lastSyncError: error.message,
       });
+      console.error("ERROR DURING SYNC:", error);
       throw error;
     } finally {
+      console.log("STEP 4 - Disconnect");
       await client.disconnect();
     }
   }

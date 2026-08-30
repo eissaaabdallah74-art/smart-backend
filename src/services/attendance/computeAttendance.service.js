@@ -172,7 +172,10 @@ async function computeMonthForImport(importId) {
         attributes: ['id', 'fullName', 'kpiAmount', 'position', 'weekendPolicy'],
         transaction: t
       });
-      const userWeekendPolicy = authUser?.weekendPolicy || null;
+      let userWeekendPolicy = authUser?.weekendPolicy || null;
+      if (typeof userWeekendPolicy === 'string') {
+        try { userWeekendPolicy = JSON.parse(userWeekendPolicy); } catch(e) { userWeekendPolicy = null; }
+      }
 
       for (const d of empDays) {
         const isException = !!d.isException;

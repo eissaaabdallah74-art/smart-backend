@@ -41,6 +41,11 @@ module.exports = (sequelize, DataTypes) => {
           isEmail: true, // Sequelize built-in
         },
       },
+
+      location: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+      },
     },
     {
       tableName: 'hubs',

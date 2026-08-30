@@ -1,30 +1,37 @@
-const { Op } = require('sequelize');
+const { Op, fn, col, where: seqWhere } = require('sequelize');
 const { Driver, Vendor, Client } = require('../models');
 
 // GET /api/tracking
 exports.getAll = async (req, res) => {
   try {
-    const { q, driverId } = req.query;
+    const { q, driverId, filter, page, limit } = req.query;
     const { id: userId, role } = req.user;
-    const where = {};
+    
+    // We only paginate if page/limit are provided. Otherwise, keep array for backward compatibility
+    const isPaginated = page && limit;
+    const pageNum = isPaginated ? parseInt(page, 10) : 1;
+    const limitNum = isPaginated ? parseInt(limit, 10) : null;
+    const offset = isPaginated ? (pageNum - 1) * limitNum : null;
+
+    const baseWhere = {};
 
     // 🔐 التصفية حسب الصلاحيات (Role-based filtering)
-    if (role === 'operation') {
+    if (role === 'operation' || role === 'poc') {
       // جلب الشركات المسندة لهذا الـ Account Manager فقط
       const managedClients = await Client.findAll({
         where: { accountManagerId: userId },
         attributes: ['name'],
       });
       const clientNames = managedClients.map((c) => c.name);
-      where.clientName = { [Op.in]: clientNames };
+      baseWhere.clientName = { [Op.in]: clientNames };
     }
 
     if (driverId) {
-      where.id = Number(driverId);
+      baseWhere.id = Number(driverId);
     }
 
     if (q) {
-      where[Op.or] = [
+      baseWhere[Op.or] = [
         { name: { [Op.like]: `%${q}%` } },
         { courierPhone: { [Op.like]: `%${q}%` } },
         { courierCode: { [Op.like]: `%${q}%` } },
@@ -32,8 +39,44 @@ exports.getAll = async (req, res) => {
       ];
     }
 
-    const rows = await Driver.findAll({
-      where,
+    // Clone baseWhere for the filtered list query
+    const listWhere = { ...baseWhere };
+
+    // Function to generate the date diff conditions
+    const getExpiredCondition = () => ({
+      [Op.or]: [
+        seqWhere(fn('DATEDIFF', col('id_expiry_date'), fn('NOW')), { [Op.lt]: 0 }),
+        seqWhere(fn('DATEDIFF', col('d_license_expiry_date'), fn('NOW')), { [Op.lt]: 0 }),
+        seqWhere(fn('DATEDIFF', col('v_license_expiry_date'), fn('NOW')), { [Op.lt]: 0 }),
+      ]
+    });
+
+    const getCriticalCondition = () => ({
+      [Op.or]: [
+        seqWhere(fn('DATEDIFF', col('id_expiry_date'), fn('NOW')), { [Op.between]: [0, 30] }),
+        seqWhere(fn('DATEDIFF', col('d_license_expiry_date'), fn('NOW')), { [Op.between]: [0, 30] }),
+        seqWhere(fn('DATEDIFF', col('v_license_expiry_date'), fn('NOW')), { [Op.between]: [0, 30] }),
+      ]
+    });
+
+    const getWarningCondition = () => ({
+      [Op.or]: [
+        seqWhere(fn('DATEDIFF', col('id_expiry_date'), fn('NOW')), { [Op.between]: [31, 60] }),
+        seqWhere(fn('DATEDIFF', col('d_license_expiry_date'), fn('NOW')), { [Op.between]: [31, 60] }),
+        seqWhere(fn('DATEDIFF', col('v_license_expiry_date'), fn('NOW')), { [Op.between]: [31, 60] }),
+      ]
+    });
+
+    if (filter === 'expired') {
+      listWhere[Op.and] = [getExpiredCondition()];
+    } else if (filter === 'critical') {
+      listWhere[Op.and] = [getCriticalCondition()];
+    } else if (filter === 'warning') {
+      listWhere[Op.and] = [getWarningCondition()];
+    }
+
+    const queryOptions = {
+      where: listWhere,
       include: [
         {
           model: Vendor,
@@ -42,7 +85,54 @@ exports.getAll = async (req, res) => {
         },
       ],
       order: [['id', 'ASC']],
-    });
+    };
+
+    if (isPaginated) {
+      queryOptions.limit = limitNum;
+      queryOptions.offset = offset;
+      
+      const [
+        totalCount,
+        expiredCount,
+        criticalCount,
+        warningCount,
+        { rows, count }
+      ] = await Promise.all([
+        Driver.count({ where: baseWhere }),
+        Driver.count({ where: { ...baseWhere, ...getExpiredCondition() } }),
+        Driver.count({ where: { ...baseWhere, ...getCriticalCondition() } }),
+        Driver.count({ where: { ...baseWhere, ...getWarningCondition() } }),
+        Driver.findAndCountAll(queryOptions)
+      ]);
+
+      const transformed = rows.map((d) => ({
+        id: d.id,
+        driverId: d.id,
+        idExpiryDate: d.idExpiryDate,
+        dLicenseExpiryDate: d.dLicenseExpiryDate,
+        vLicenseExpiryDate: d.vLicenseExpiryDate,
+        notes: d.notes,
+        driver: d,
+      }));
+
+      return res.json({
+        data: transformed,
+        meta: {
+          total: count,
+          page: pageNum,
+          limit: limitNum,
+          totalPages: Math.ceil(count / limitNum),
+          stats: {
+            total: totalCount,
+            expired: expiredCount,
+            critical: criticalCount,
+            warning: warningCount
+          }
+        }
+      });
+    }
+
+    const rows = await Driver.findAll(queryOptions);
 
     // Match the frontend's expected "TrackingRow" structure for backward compatibility
     const transformed = rows.map((d) => ({

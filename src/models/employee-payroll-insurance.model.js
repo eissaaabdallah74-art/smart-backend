@@ -11,17 +11,41 @@ module.exports = (sequelize, DataTypes) => {
       },
 
       medicalInsuranceStatus: {
-        type: DataTypes.ENUM('done', 'pending', 'not_insured'),
+        type: DataTypes.ENUM('done', 'pending', 'not_insured', 'resigned_of_insurance'),
         allowNull: false,
         defaultValue: 'not_insured',
         field: 'medical_insurance_status',
       },
 
       socialInsuranceStatus: {
-        type: DataTypes.ENUM('done', 'pending', 'not_insured'),
+        type: DataTypes.ENUM('done', 'pending', 'not_insured', 'resigned_of_insurance'),
         allowNull: false,
         defaultValue: 'not_insured',
         field: 'social_insurance_status',
+      },
+
+      insuranceNumber: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        field: 'insurance_number',
+      },
+
+      socialInsuranceDate: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: 'social_insurance_date',
+      },
+
+      socialInsuranceExitDate: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: 'social_insurance_exit_date',
+      },
+
+      socialInsuranceExitReason: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        field: 'social_insurance_exit_reason',
       },
 
       grossSalary: {

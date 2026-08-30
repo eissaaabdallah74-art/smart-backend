@@ -1,6 +1,6 @@
 // src/models/interview.model.js
 const { VEHICLE_TYPES } = require("../constants/vehicle-types");
-const { SIGNED_WITH_HR_STATUSES } = require("../constants/enums");
+const { SIGNED_WITH_HR_STATUSES, DRIVER_PAYMENT_METHODS } = require("../constants/enums");
 
 module.exports = (sequelize, DataTypes) => {
   const Interview = sequelize.define(
@@ -58,6 +58,31 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(150),
         allowNull: true,
         field: "residence",
+      },
+
+      relativeName: {
+        type: DataTypes.STRING(150),
+        allowNull: true,
+        field: "relative_name",
+      },
+
+      relativePhoneNumber: {
+        type: DataTypes.STRING(40),
+        allowNull: true,
+        field: "relative_phone_number",
+      },
+
+      contractLocationType: {
+        type: DataTypes.ENUM("company", "courier"),
+        allowNull: true,
+        defaultValue: "company",
+        field: "contract_location_type",
+      },
+
+      contractLocationCourierId: {
+        type: DataTypes.INTEGER.UNSIGNED,
+        allowNull: true,
+        field: "contract_location_courier_id",
       },
 
       clientId: {
@@ -221,7 +246,59 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: true,
       },
-      
+
+      trustReceiptsCount: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        defaultValue: 0,
+        field: "trust_receipts_count",
+      },
+
+      trustReceiptsAmount: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
+        defaultValue: 0.00,
+        field: "trust_receipts_amount",
+      },
+
+      // ===================== NEW Financial Fields =====================
+      paymentMethod: {
+        type: DataTypes.ENUM(...DRIVER_PAYMENT_METHODS),
+        allowNull: true,
+        field: "payment_method",
+      },
+      bankName: {
+        type: DataTypes.STRING(150),
+        allowNull: true,
+        field: "bank_name",
+      },
+      bankAccountNumber: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        field: "bank_account_number",
+      },
+      walletName: {
+        type: DataTypes.STRING(150),
+        allowNull: true,
+        field: "wallet_name",
+      },
+      walletNumber: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        field: "wallet_number",
+      },
+
+      // ===================== CRM Day 1 Exceptions =====================
+      crmDay1Status: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        field: "crm_day1_status",
+      },
+      crmDay1ApprovedAt: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: "crm_day1_approved_at",
+      },
 
       // ===================== Audit Fields =====================
       createdById: {

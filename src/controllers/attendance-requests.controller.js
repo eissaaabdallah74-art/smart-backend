@@ -272,7 +272,7 @@ exports.createMyRequest = async (req, res) => {
 exports.listMyRequests = async (req, res) => {
   try {
     const employeeId = getEmployeeIdFromUser(req.user);
-    if (!employeeId) return res.status(401).json({ message: "Unauthorized employee" });
+    if (!employeeId) return res.json([]);
 
     const { month } = req.query || {};
     const where = { employeeId };

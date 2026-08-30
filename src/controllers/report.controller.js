@@ -83,7 +83,7 @@ async function loadOperationStaff({ user, includeInactive, assigneeId }) {
     user.role === 'admin' || isOperationManagerOrSupervisor(user);
 
   const isOpStaff =
-    user.role === 'operation' &&
+    (user.role === 'operation' || user.role === 'poc') &&
     (user.position === 'senior' || user.position === 'junior');
 
   if (!canViewAll && !isOpStaff) {
@@ -94,7 +94,7 @@ async function loadOperationStaff({ user, includeInactive, assigneeId }) {
 
   if (canViewAll) {
     const staffWhere = {
-      role: 'operation',
+      role: { [Op.in]: ['operation', 'poc'] },
       position: { [Op.in]: ['senior', 'junior'] },
     };
     if (!includeInactive) staffWhere.isActive = true;
@@ -161,7 +161,7 @@ exports.getOperationCallsInterviewsReport = async (req, res) => {
       user.role === 'admin' || isOperationManagerOrSupervisor(user);
 
     const isOpStaff =
-      user.role === 'operation' &&
+      (user.role === 'operation' || user.role === 'poc') &&
       (user.position === 'senior' || user.position === 'junior');
 
     if (!canViewAll && !isOpStaff) {
@@ -564,7 +564,7 @@ exports.getOperationAchievementsReport = async (req, res) => {
     });
 
     const allAccountManagers = await Auth.findAll({
-      where: { role: 'operation', isActive: true },
+      where: { role: { [Op.in]: ['operation', 'poc'] }, isActive: true },
       attributes: ['id', 'fullName', 'position', 'isActive'],
       order: [['fullName', 'ASC']],
       raw: true
